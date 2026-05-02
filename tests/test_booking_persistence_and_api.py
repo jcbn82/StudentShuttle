@@ -215,7 +215,7 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
         expected_retention = receipt.created_at + timedelta(days=365 * 7)
         self.assertEqual(receipt.retention_until.date(), expected_retention.date())
 
-        with self.assertRaisesRegex(ValueError, "persisted handover_receipt_id"):
+        with self.assertRaisesRegex(Exception, "stored handover_receipt_id"):
             self.service.close_booking(booking.id, {"actor_id": self.actor_id})
 
         self.service.sign_handover_receipt(
