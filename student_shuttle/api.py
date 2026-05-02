@@ -1,0 +1,138 @@
+"""Small JSON HTTP API for the booking state machine.
+
+The API uses only the Python standard library so it can run in this repository
+without framework setup. A future web framework can wrap the same
+``BookingService`` methods.
+"""
+
+from __future__ import annotations
+
+import json
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, Callable
+
+from student_shuttle.booking import BookingRuleError
+from student_shuttle.repository import BookingNotFoundError, SQLiteBookingRepository
+from student_shuttle.serialization import booking_to_dict, event_to_dict
+from student_shuttle.service import BookingService
+
+
+class BookingAPIHandler(BaseHTTPRequestHandler):
+    """HTTP handler that dispatches booking lifecycle actions."""
+
+    service: BookingService
+
+    def do_GET(self) -> None:
+        try:
+            booking_id, suffix = self._parse_booking_route()
+            if suffix == "":
+                booking = self.service.repository.get_booking(booking_id)
+                self._write_json(HTTPStatus.OK, {"booking": booking_to_dict(booking)})
+                return
+            if suffix == "/events":
+                events = self.service.repository.list_events(booking_id)
+                self._write_json(
+                    HTTPStatus.OK,
+                    {"events": [event_to_dict(event) for event in events]},
+                )
+                return
+            self._write_json(HTTPStatus.NOT_FOUND, {"error": "route not found"})
+        except BookingNotFoundError as exc:
+            self._write_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+        except ValueError as exc:
+            self._write_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+    def do_POST(self) -> None:
+        try:
+            if self.path == "/bookings":
+                payload = self._read_json()
+                booking, event = self.service.create_booking(payload)
+                self._write_transition(HTTPStatus.CREATED, booking, event)
+                return
+
+            booking_id, suffix = self._parse_booking_route()
+            actions: dict[str, Callable[[str, dict[str, Any]], Any]] = {
+                "/assign-driver": self.service.assign_driver,
+                "/flight-update": self.service.record_flight_update,
+                "/mark-met": self.service.mark_met,
+                "/mark-arrived": self.service.mark_arrived,
+                "/close": self.service.close_booking,
+                "/cancel": self.service.cancel_booking,
+                "/incidents": self.service.raise_incident,
+            }
+            action = actions.get(suffix)
+            if action is None:
+                self._write_json(HTTPStatus.NOT_FOUND, {"error": "route not found"})
+                return
+
+            payload = self._read_json()
+            booking, event = action(booking_id, payload)
+            self._write_transition(HTTPStatus.OK, booking, event)
+        except BookingNotFoundError as exc:
+            self._write_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+        except (BookingRuleError, KeyError, ValueError, json.JSONDecodeError) as exc:
+            self._write_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+    def _parse_booking_route(self) -> tuple[str, str]:
+        parts = self.path.split("?")[0].strip("/").split("/")
+        if len(parts) < 2 or parts[0] != "bookings":
+            raise ValueError("expected /bookings/{booking_id}")
+        booking_id = parts[1]
+        suffix = "" if len(parts) == 2 else "/" + "/".join(parts[2:])
+        return booking_id, suffix
+
+    def _read_json(self) -> dict[str, Any]:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(content_length).decode("utf-8")
+        if not raw_body:
+            return {}
+        data = json.loads(raw_body)
+        if not isinstance(data, dict):
+            raise ValueError("request body must be a JSON object")
+        return data
+
+    def _write_transition(self, status: HTTPStatus, booking: Any, event: Any) -> None:
+        self._write_json(
+            status,
+            {
+                "booking": booking_to_dict(booking),
+                "event": event_to_dict(event),
+            },
+        )
+
+    def _write_json(self, status: HTTPStatus, body: dict[str, Any]) -> None:
+        payload = json.dumps(body, sort_keys=True).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+def create_server(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    database_path: str = "student_shuttle.sqlite3",
+) -> ThreadingHTTPServer:
+    repository = SQLiteBookingRepository(database_path)
+    service = BookingService(repository)
+
+    class ConfiguredBookingAPIHandler(BookingAPIHandler):
+        pass
+
+    ConfiguredBookingAPIHandler.service = service
+    return ThreadingHTTPServer((host, port), ConfiguredBookingAPIHandler)
+
+
+def main() -> None:
+    server = create_server()
+    print("Student Shuttle API listening on http://127.0.0.1:8000")
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
