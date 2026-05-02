@@ -87,6 +87,59 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
         self.assertEqual(second_attempt.status, NotificationStatus.SENT)
         self.assertEqual(second_attempt.attempts, 2)
 
+    def test_eligible_drivers_filter_availability_and_blue_card(self) -> None:
+        booking, _ = self.service.create_booking(self._under_18_booking_payload())
+        unavailable = self.service.create_driver(self._driver_profile_payload("Unavailable Driver"))
+        expired = self.service.create_driver(
+            self._driver_profile_payload(
+                "Expired Driver",
+                blue_card_expiry=(self.pickup_at - timedelta(days=1)).isoformat(),
+            )
+        )
+        eligible = self.service.create_driver(self._driver_profile_payload("Eligible Driver"))
+
+        for driver in (expired, eligible):
+            self.service.add_driver_availability(
+                driver.id,
+                {
+                    "airport": "BNE",
+                    "starts_at": (self.pickup_at - timedelta(hours=2)).isoformat(),
+                    "ends_at": (self.pickup_at + timedelta(hours=2)).isoformat(),
+                },
+            )
+
+        eligible_drivers = self.service.eligible_drivers(booking.id)
+
+        self.assertEqual([driver.id for driver in eligible_drivers], [eligible.id])
+        self.assertNotIn(unavailable.id, {driver.id for driver in eligible_drivers})
+
+    def test_assign_by_stored_driver_requires_availability_and_persists_snapshot(self) -> None:
+        booking, _ = self.service.create_booking(self._adult_booking_payload())
+        driver = self.service.create_driver(self._driver_profile_payload("Dana Driver"))
+
+        with self.assertRaisesRegex(Exception, "not available"):
+            self.service.assign_driver(
+                booking.id,
+                {"actor_id": self.actor_id, "driver_id": str(driver.id)},
+            )
+
+        self.service.add_driver_availability(
+            driver.id,
+            {
+                "airport": "BNE",
+                "starts_at": (self.pickup_at - timedelta(hours=1)).isoformat(),
+                "ends_at": (self.pickup_at + timedelta(hours=1)).isoformat(),
+            },
+        )
+        assigned_booking, event = self.service.assign_driver(
+            booking.id,
+            {"actor_id": self.actor_id, "driver_id": str(driver.id)},
+        )
+
+        self.assertEqual(assigned_booking.driver_id, driver.id)
+        self.assertEqual(assigned_booking.vehicle_snapshot.plate, "ABC123")
+        self.assertEqual(event.event_type, EventType.DRIVER_ASSIGNED)
+
     def test_api_creates_fetches_and_transitions_booking(self) -> None:
         server = self._start_test_server()
         try:
@@ -410,6 +463,58 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_api_creates_driver_lists_eligible_and_assigns_by_driver_id(self) -> None:
+        server = self._start_test_server()
+        try:
+            _, created_body = self._request(
+                "POST",
+                "/bookings",
+                self._adult_booking_payload(),
+                server.server_port,
+            )
+            booking_id = created_body["booking"]["id"]
+            driver_status, driver_body = self._request(
+                "POST",
+                "/drivers",
+                self._driver_profile_payload("Dana Driver"),
+                server.server_port,
+            )
+            self.assertEqual(driver_status, 201)
+            driver_id = driver_body["driver"]["id"]
+
+            availability_status, _ = self._request(
+                "POST",
+                f"/drivers/{driver_id}/availability",
+                {
+                    "airport": "BNE",
+                    "starts_at": (self.pickup_at - timedelta(hours=1)).isoformat(),
+                    "ends_at": (self.pickup_at + timedelta(hours=1)).isoformat(),
+                },
+                server.server_port,
+            )
+            self.assertEqual(availability_status, 201)
+
+            eligible_status, eligible_body = self._request(
+                "GET",
+                f"/bookings/{booking_id}/eligible-drivers",
+                None,
+                server.server_port,
+            )
+            self.assertEqual(eligible_status, 200)
+            self.assertEqual([driver["id"] for driver in eligible_body["drivers"]], [driver_id])
+
+            assign_status, assign_body = self._request(
+                "POST",
+                f"/bookings/{booking_id}/assign-driver",
+                {"actor_id": self.actor_id, "driver_id": driver_id},
+                server.server_port,
+            )
+            self.assertEqual(assign_status, 200)
+            self.assertEqual(assign_body["booking"]["driver_id"], driver_id)
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def _start_test_server(self):
         service = self.service
 
@@ -540,6 +645,28 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
             "blue_card_status": "CURRENT",
             "blue_card_expiry": (self.pickup_at + timedelta(days=30)).isoformat(),
             "blue_card_reference": "BC-123",
+        }
+
+    def _driver_profile_payload(
+        self,
+        full_name: str,
+        *,
+        blue_card_expiry: str | None = None,
+        retention_tier: str = "gold",
+    ) -> dict:
+        return {
+            "full_name": full_name,
+            "phone": "+61400000000",
+            "vehicle_details": {
+                "make": "Toyota",
+                "model": "Camry",
+                "plate": "ABC123",
+            },
+            "blue_card_status": "CURRENT",
+            "blue_card_expiry": blue_card_expiry
+            or (self.pickup_at + timedelta(days=30)).isoformat(),
+            "blue_card_reference": "BC-123",
+            "retention_tier": retention_tier,
         }
 
 

@@ -10,6 +10,7 @@ from uuid import UUID
 
 from student_shuttle.booking import ActorType, Booking, Event, EventSink
 from student_shuttle.documents import DocumentRecord, DocumentType
+from student_shuttle.drivers import DriverAvailability, DriverRecord
 from student_shuttle.incidents import IncidentRecord, IncidentStatus
 from student_shuttle.notifications import (
     Channel,
@@ -124,6 +125,32 @@ class SQLiteBookingRepository(EventSink):
 
             CREATE INDEX IF NOT EXISTS incidents_status_idx
                 ON incidents (status, raised_at);
+
+            CREATE TABLE IF NOT EXISTS drivers (
+                id TEXT PRIMARY KEY,
+                full_name TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                vehicle_details TEXT NOT NULL,
+                blue_card_status TEXT,
+                blue_card_expiry TEXT,
+                blue_card_reference TEXT,
+                retention_tier TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS driver_availability (
+                id TEXT PRIMARY KEY,
+                driver_id TEXT NOT NULL,
+                airport TEXT NOT NULL,
+                starts_at TEXT NOT NULL,
+                ends_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (driver_id) REFERENCES drivers(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS driver_availability_lookup_idx
+                ON driver_availability (airport, starts_at, ends_at);
             """
         )
         self.connection.commit()
@@ -445,6 +472,134 @@ class SQLiteBookingRepository(EventSink):
         ).fetchall()
         return tuple(self._incident_from_row(row) for row in rows)
 
+    def save_driver(self, driver: DriverRecord) -> DriverRecord:
+        self.connection.execute(
+            """
+            INSERT INTO drivers (
+                id, full_name, phone, vehicle_details, blue_card_status,
+                blue_card_expiry, blue_card_reference, retention_tier,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                full_name = excluded.full_name,
+                phone = excluded.phone,
+                vehicle_details = excluded.vehicle_details,
+                blue_card_status = excluded.blue_card_status,
+                blue_card_expiry = excluded.blue_card_expiry,
+                blue_card_reference = excluded.blue_card_reference,
+                retention_tier = excluded.retention_tier,
+                updated_at = excluded.updated_at
+            """,
+            (
+                str(driver.id),
+                driver.full_name,
+                driver.phone,
+                json.dumps(
+                    {
+                        "make": driver.vehicle_details.make,
+                        "model": driver.vehicle_details.model,
+                        "plate": driver.vehicle_details.plate,
+                        "photo_url": driver.vehicle_details.photo_url,
+                    },
+                    sort_keys=True,
+                ),
+                driver.blue_card_status,
+                _optional_datetime_to_str(driver.blue_card_expiry),
+                driver.blue_card_reference,
+                driver.retention_tier,
+                driver.created_at.isoformat() if driver.created_at else "",
+                driver.updated_at.isoformat() if driver.updated_at else "",
+            ),
+        )
+        self.connection.commit()
+        return driver
+
+    def get_driver(self, driver_id: UUID | str) -> DriverRecord:
+        row = self.connection.execute(
+            """
+            SELECT id, full_name, phone, vehicle_details, blue_card_status,
+                   blue_card_expiry, blue_card_reference, retention_tier,
+                   created_at, updated_at
+            FROM drivers
+            WHERE id = ?
+            """,
+            (str(driver_id),),
+        ).fetchone()
+        if row is None:
+            raise BookingNotFoundError(f"driver {driver_id} was not found")
+        return self._driver_from_row(row)
+
+    def list_drivers(self) -> tuple[DriverRecord, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, full_name, phone, vehicle_details, blue_card_status,
+                   blue_card_expiry, blue_card_reference, retention_tier,
+                   created_at, updated_at
+            FROM drivers
+            ORDER BY full_name ASC, id ASC
+            """
+        ).fetchall()
+        return tuple(self._driver_from_row(row) for row in rows)
+
+    def save_driver_availability(
+        self, availability: DriverAvailability
+    ) -> DriverAvailability:
+        self.connection.execute(
+            """
+            INSERT INTO driver_availability (
+                id, driver_id, airport, starts_at, ends_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                airport = excluded.airport,
+                starts_at = excluded.starts_at,
+                ends_at = excluded.ends_at
+            """,
+            (
+                str(availability.id),
+                str(availability.driver_id),
+                availability.airport.value,
+                availability.starts_at.isoformat(),
+                availability.ends_at.isoformat(),
+                availability.created_at.isoformat() if availability.created_at else "",
+            ),
+        )
+        self.connection.commit()
+        return availability
+
+    def list_driver_availability(
+        self, driver_id: UUID | str
+    ) -> tuple[DriverAvailability, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, driver_id, airport, starts_at, ends_at, created_at
+            FROM driver_availability
+            WHERE driver_id = ?
+            ORDER BY starts_at ASC, id ASC
+            """,
+            (str(driver_id),),
+        ).fetchall()
+        return tuple(self._availability_from_row(row) for row in rows)
+
+    def driver_is_available(
+        self, driver_id: UUID | str, airport, pickup_at
+    ) -> bool:
+        return any(
+            availability.covers(airport, pickup_at)
+            for availability in self.list_driver_availability(driver_id)
+        )
+
+    def all_availability(self) -> tuple[DriverAvailability, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, driver_id, airport, starts_at, ends_at, created_at
+            FROM driver_availability
+            ORDER BY starts_at ASC, id ASC
+            """
+        ).fetchall()
+        return tuple(self._availability_from_row(row) for row in rows)
+
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> Event:
         data = dict(row)
@@ -513,6 +668,46 @@ class SQLiteBookingRepository(EventSink):
             retention_until=datetime.fromisoformat(data["retention_until"]),
             created_at=datetime.fromisoformat(data["created_at"]),
             updated_at=datetime.fromisoformat(data["updated_at"]),
+        )
+
+    @staticmethod
+    def _driver_from_row(row: sqlite3.Row) -> DriverRecord:
+        from datetime import datetime
+        from student_shuttle.booking import VehicleSnapshot
+
+        data = dict(row)
+        vehicle = json.loads(data["vehicle_details"])
+        return DriverRecord(
+            id=UUID(data["id"]),
+            full_name=data["full_name"],
+            phone=data["phone"],
+            vehicle_details=VehicleSnapshot(
+                make=vehicle["make"],
+                model=vehicle["model"],
+                plate=vehicle["plate"],
+                photo_url=vehicle.get("photo_url"),
+            ),
+            blue_card_status=data["blue_card_status"],
+            blue_card_expiry=_optional_datetime_from_str(data["blue_card_expiry"]),
+            blue_card_reference=data["blue_card_reference"],
+            retention_tier=data["retention_tier"],
+            created_at=datetime.fromisoformat(data["created_at"]),
+            updated_at=datetime.fromisoformat(data["updated_at"]),
+        )
+
+    @staticmethod
+    def _availability_from_row(row: sqlite3.Row) -> DriverAvailability:
+        from datetime import datetime
+        from student_shuttle.booking import Airport
+
+        data = dict(row)
+        return DriverAvailability(
+            id=UUID(data["id"]),
+            driver_id=UUID(data["driver_id"]),
+            airport=Airport(data["airport"]),
+            starts_at=datetime.fromisoformat(data["starts_at"]),
+            ends_at=datetime.fromisoformat(data["ends_at"]),
+            created_at=datetime.fromisoformat(data["created_at"]),
         )
 
 

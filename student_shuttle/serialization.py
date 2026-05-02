@@ -23,6 +23,7 @@ from student_shuttle.booking import (
     VehicleSnapshot,
 )
 from student_shuttle.documents import DocumentRecord
+from student_shuttle.drivers import DriverAvailability, DriverRecord
 from student_shuttle.incidents import IncidentRecord
 from student_shuttle.notifications import NotificationRecord
 
@@ -220,6 +221,32 @@ def incident_to_dict(incident: IncidentRecord) -> dict[str, Any]:
         "resolved_by": _optional_uuid_to_str(incident.resolved_by),
         "resolved_at": _optional_datetime_to_str(incident.resolved_at),
         "updated_at": _optional_datetime_to_str(incident.updated_at),
+    }
+
+
+def driver_to_dict(driver: DriverRecord) -> dict[str, Any]:
+    return {
+        "id": str(driver.id),
+        "full_name": driver.full_name,
+        "phone": driver.phone,
+        "vehicle_details": _vehicle_to_dict(driver.vehicle_details),
+        "blue_card_status": driver.blue_card_status,
+        "blue_card_expiry": _optional_datetime_to_str(driver.blue_card_expiry),
+        "blue_card_reference": driver.blue_card_reference,
+        "retention_tier": driver.retention_tier,
+        "created_at": _optional_datetime_to_str(driver.created_at),
+        "updated_at": _optional_datetime_to_str(driver.updated_at),
+    }
+
+
+def availability_to_dict(availability: DriverAvailability) -> dict[str, Any]:
+    return {
+        "id": str(availability.id),
+        "driver_id": str(availability.driver_id),
+        "airport": availability.airport.value,
+        "starts_at": _datetime_to_str(availability.starts_at),
+        "ends_at": _datetime_to_str(availability.ends_at),
+        "created_at": _optional_datetime_to_str(availability.created_at),
     }
 
 

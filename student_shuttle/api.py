@@ -16,8 +16,10 @@ from student_shuttle.booking import BookingRuleError
 from student_shuttle.notification_worker import NotificationWorker
 from student_shuttle.repository import BookingNotFoundError, SQLiteBookingRepository
 from student_shuttle.serialization import (
+    availability_to_dict,
     booking_to_dict,
     document_to_dict,
+    driver_to_dict,
     event_to_dict,
     incident_to_dict,
     notification_to_dict,
@@ -33,6 +35,11 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         try:
+            if self.path.startswith("/drivers/"):
+                driver_id = self.path.split("?")[0].strip("/").split("/")[1]
+                driver = self.service.repository.get_driver(driver_id)
+                self._write_json(HTTPStatus.OK, {"driver": driver_to_dict(driver)})
+                return
             booking_id, suffix = self._parse_booking_route()
             if suffix == "":
                 booking = self.service.repository.get_booking(booking_id)
@@ -79,6 +86,13 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
                     },
                 )
                 return
+            if suffix == "/eligible-drivers":
+                drivers = self.service.eligible_drivers(booking_id)
+                self._write_json(
+                    HTTPStatus.OK,
+                    {"drivers": [driver_to_dict(driver) for driver in drivers]},
+                )
+                return
             self._write_json(HTTPStatus.NOT_FOUND, {"error": "route not found"})
         except BookingNotFoundError as exc:
             self._write_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
@@ -91,6 +105,20 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
                 payload = self._read_json()
                 booking, event = self.service.create_booking(payload)
                 self._write_transition(HTTPStatus.CREATED, booking, event)
+                return
+            if self.path == "/drivers":
+                payload = self._read_json()
+                driver = self.service.create_driver(payload)
+                self._write_json(HTTPStatus.CREATED, {"driver": driver_to_dict(driver)})
+                return
+            if self.path.startswith("/drivers/") and self.path.endswith("/availability"):
+                driver_id = self.path.split("?")[0].strip("/").split("/")[1]
+                payload = self._read_json()
+                availability = self.service.add_driver_availability(driver_id, payload)
+                self._write_json(
+                    HTTPStatus.CREATED,
+                    {"availability": availability_to_dict(availability)},
+                )
                 return
             if self.path == "/notifications/deliver-pending":
                 delivered = self.notification_worker.deliver_pending()

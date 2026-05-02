@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from student_shuttle.booking import (
     ActorType,
@@ -23,6 +23,7 @@ from student_shuttle.booking import (
     VehicleSnapshot,
 )
 from student_shuttle.documents import DocumentRecord, DocumentType
+from student_shuttle.drivers import DriverAvailability, DriverRecord
 from student_shuttle.incidents import IncidentRecord, IncidentStatus
 from student_shuttle.repository import SQLiteBookingRepository
 
@@ -73,8 +74,19 @@ class BookingService:
 
     def assign_driver(self, booking_id: UUID | str, data: dict) -> tuple[Booking, Event]:
         booking = self.repository.get_booking(booking_id)
+        driver = (
+            self.repository.get_driver(data["driver_id"]).to_domain_driver()
+            if data.get("driver_id")
+            else _driver_from_data(data["driver"])
+        )
+        if data.get("driver_id") and not self.repository.driver_is_available(
+            driver.id,
+            booking.pickup_airport,
+            booking.pickup_scheduled_arrival,
+        ):
+            raise BookingRuleError("driver is not available for this booking pickup")
         event = booking.assign_driver(
-            _driver_from_data(data["driver"]),
+            driver,
             event_sink=self.repository,
             actor_id=UUID(data["actor_id"]),
             actor_type=ActorType(data.get("actor_type", ActorType.OPS.value)),
@@ -82,6 +94,66 @@ class BookingService:
         )
         self.repository.save_booking(booking)
         return booking, event
+
+    def create_driver(self, data: dict) -> DriverRecord:
+        now = _parse_optional_datetime(data.get("now")) or _utc_now()
+        driver = DriverRecord(
+            id=_optional_uuid(data.get("id")) or uuid4(),
+            full_name=data["full_name"],
+            phone=data["phone"],
+            vehicle_details=_vehicle_from_data(data["vehicle_details"]),
+            blue_card_status=data.get("blue_card_status"),
+            blue_card_expiry=_parse_optional_datetime(data.get("blue_card_expiry")),
+            blue_card_reference=data.get("blue_card_reference"),
+            retention_tier=data.get("retention_tier"),
+            created_at=now,
+            updated_at=now,
+        )
+        return self.repository.save_driver(driver)
+
+    def add_driver_availability(
+        self, driver_id: UUID | str, data: dict
+    ) -> DriverAvailability:
+        self.repository.get_driver(driver_id)
+        starts_at = _parse_datetime(data["starts_at"])
+        ends_at = _parse_datetime(data["ends_at"])
+        if ends_at < starts_at:
+            raise ValueError("availability ends_at must be after starts_at")
+        availability = DriverAvailability(
+            driver_id=UUID(str(driver_id)),
+            airport=Airport(data["airport"]),
+            starts_at=starts_at,
+            ends_at=ends_at,
+            created_at=_parse_optional_datetime(data.get("created_at")) or _utc_now(),
+        )
+        return self.repository.save_driver_availability(availability)
+
+    def eligible_drivers(self, booking_id: UUID | str) -> tuple[DriverRecord, ...]:
+        booking = self.repository.get_booking(booking_id)
+        eligible = []
+        for driver in self.repository.list_drivers():
+            if not self.repository.driver_is_available(
+                driver.id,
+                booking.pickup_airport,
+                booking.pickup_scheduled_arrival,
+            ):
+                continue
+            if booking.is_under_18 and not driver.to_domain_driver().has_valid_blue_card_for(
+                booking.pickup_scheduled_arrival
+            ):
+                continue
+            eligible.append(driver)
+        tier_priority = {"gold": 0, "silver": 1, "bronze": 2}
+        return tuple(
+            sorted(
+                eligible,
+                key=lambda driver: (
+                    tier_priority.get((driver.retention_tier or "").lower(), 99),
+                    driver.full_name,
+                    str(driver.id),
+                ),
+            )
+        )
 
     def record_flight_update(self, booking_id: UUID | str, data: dict) -> tuple[Booking, Event]:
         booking = self.repository.get_booking(booking_id)
@@ -268,21 +340,24 @@ def _address_from_data(data: dict) -> Address:
 
 
 def _driver_from_data(data: dict) -> Driver:
-    vehicle = data["vehicle_details"]
     return Driver(
         id=UUID(data["id"]),
         full_name=data["full_name"],
         phone=data["phone"],
-        vehicle_details=VehicleSnapshot(
-            make=vehicle["make"],
-            model=vehicle["model"],
-            plate=vehicle["plate"],
-            photo_url=vehicle.get("photo_url"),
-        ),
+        vehicle_details=_vehicle_from_data(data["vehicle_details"]),
         blue_card_status=data.get("blue_card_status"),
         blue_card_expiry=_parse_optional_datetime(data.get("blue_card_expiry")),
         blue_card_reference=data.get("blue_card_reference"),
         retention_tier=data.get("retention_tier"),
+    )
+
+
+def _vehicle_from_data(data: dict) -> VehicleSnapshot:
+    return VehicleSnapshot(
+        make=data["make"],
+        model=data["model"],
+        plate=data["plate"],
+        photo_url=data.get("photo_url"),
     )
 
 
