@@ -37,6 +37,7 @@ Implemented lifecycle routes:
 - `GET /bookings/{booking_id}`
 - `GET /bookings/{booking_id}/events`
 - `GET /bookings/{booking_id}/notifications`
+- `GET /bookings/{booking_id}/documents`
 - `POST /bookings/{booking_id}/assign-driver`
 - `POST /bookings/{booking_id}/flight-update`
 - `POST /bookings/{booking_id}/mark-met`
@@ -45,8 +46,10 @@ Implemented lifecycle routes:
 - `POST /bookings/{booking_id}/cancel`
 - `POST /bookings/{booking_id}/incidents`
 - `POST /bookings/{booking_id}/notifications/plan`
+- `POST /bookings/{booking_id}/handover-receipts`
 - `POST /notifications/deliver-pending`
 - `POST /notifications/{notification_id}/retry`
+- `POST /documents/{document_id}/sign`
 
 ## Notifications
 
@@ -57,3 +60,10 @@ running the planner repeatedly will not duplicate delivery intents.
 The local notification worker uses recording adapters for email, email digest,
 SMS, WhatsApp, and Slack. These adapters make delivery state testable without
 external providers; production adapters can implement the same `send` method.
+
+## Under-18 handover receipts
+
+Under-18 bookings must close with a persisted handover receipt. Create a receipt
+after arrival, sign it as the driver and either the host or welfare officer, then
+close the booking with `handover_receipt_id`. Receipt documents include payload
+metadata and a seven-year retention date.
