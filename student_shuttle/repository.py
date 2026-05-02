@@ -9,6 +9,7 @@ from typing import Iterable
 from uuid import UUID
 
 from student_shuttle.booking import Booking, Event, EventSink
+from student_shuttle.documents import DocumentRecord, DocumentType
 from student_shuttle.notifications import (
     Channel,
     NotificationRecord,
@@ -78,6 +79,24 @@ class SQLiteBookingRepository(EventSink):
 
             CREATE INDEX IF NOT EXISTS notifications_status_idx
                 ON notifications (status, created_at);
+
+            CREATE TABLE IF NOT EXISTS documents (
+                id TEXT PRIMARY KEY,
+                booking_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                file_ref TEXT,
+                payload TEXT NOT NULL,
+                signed_by_driver_at TEXT,
+                signed_by_host_at TEXT,
+                signed_by_welfare_officer_at TEXT,
+                retention_until TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (booking_id) REFERENCES bookings(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS documents_booking_type_idx
+                ON documents (booking_id, type, created_at);
             """
         )
         self.connection.commit()
@@ -265,6 +284,70 @@ class SQLiteBookingRepository(EventSink):
         self.connection.commit()
         return notification
 
+    def save_document(self, document: DocumentRecord) -> DocumentRecord:
+        self.connection.execute(
+            """
+            INSERT INTO documents (
+                id, booking_id, type, file_ref, payload, signed_by_driver_at,
+                signed_by_host_at, signed_by_welfare_officer_at, retention_until,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                file_ref = excluded.file_ref,
+                payload = excluded.payload,
+                signed_by_driver_at = excluded.signed_by_driver_at,
+                signed_by_host_at = excluded.signed_by_host_at,
+                signed_by_welfare_officer_at = excluded.signed_by_welfare_officer_at,
+                retention_until = excluded.retention_until,
+                updated_at = excluded.updated_at
+            """,
+            (
+                str(document.id),
+                str(document.booking_id),
+                document.type.value,
+                document.file_ref,
+                json.dumps(document.payload, sort_keys=True),
+                _optional_datetime_to_str(document.signed_by_driver_at),
+                _optional_datetime_to_str(document.signed_by_host_at),
+                _optional_datetime_to_str(document.signed_by_welfare_officer_at),
+                document.retention_until.isoformat(),
+                document.created_at.isoformat(),
+                (document.updated_at or document.created_at).isoformat(),
+            ),
+        )
+        self.connection.commit()
+        return document
+
+    def get_document(self, document_id: UUID | str) -> DocumentRecord:
+        row = self.connection.execute(
+            """
+            SELECT id, booking_id, type, file_ref, payload, signed_by_driver_at,
+                   signed_by_host_at, signed_by_welfare_officer_at, retention_until,
+                   created_at, updated_at
+            FROM documents
+            WHERE id = ?
+            """,
+            (str(document_id),),
+        ).fetchone()
+        if row is None:
+            raise BookingNotFoundError(f"document {document_id} was not found")
+        return self._document_from_row(row)
+
+    def list_documents(self, booking_id: UUID | str) -> tuple[DocumentRecord, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, booking_id, type, file_ref, payload, signed_by_driver_at,
+                   signed_by_host_at, signed_by_welfare_officer_at, retention_until,
+                   created_at, updated_at
+            FROM documents
+            WHERE booking_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (str(booking_id),),
+        ).fetchall()
+        return tuple(self._document_from_row(row) for row in rows)
+
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> Event:
         data = dict(row)
@@ -290,3 +373,34 @@ class SQLiteBookingRepository(EventSink):
             created_at=datetime.fromisoformat(data["created_at"]),
             updated_at=datetime.fromisoformat(data["updated_at"]),
         )
+
+    @staticmethod
+    def _document_from_row(row: sqlite3.Row) -> DocumentRecord:
+        from datetime import datetime
+
+        data = dict(row)
+        return DocumentRecord(
+            id=UUID(data["id"]),
+            booking_id=UUID(data["booking_id"]),
+            type=DocumentType(data["type"]),
+            file_ref=data["file_ref"],
+            payload=json.loads(data["payload"]),
+            signed_by_driver_at=_optional_datetime_from_str(data["signed_by_driver_at"]),
+            signed_by_host_at=_optional_datetime_from_str(data["signed_by_host_at"]),
+            signed_by_welfare_officer_at=_optional_datetime_from_str(
+                data["signed_by_welfare_officer_at"]
+            ),
+            retention_until=datetime.fromisoformat(data["retention_until"]),
+            created_at=datetime.fromisoformat(data["created_at"]),
+            updated_at=datetime.fromisoformat(data["updated_at"]),
+        )
+
+
+def _optional_datetime_to_str(value) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _optional_datetime_from_str(value: str | None):
+    from datetime import datetime
+
+    return datetime.fromisoformat(value) if value else None

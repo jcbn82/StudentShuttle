@@ -22,6 +22,7 @@ from student_shuttle.booking import (
     PaymentStatus,
     VehicleSnapshot,
 )
+from student_shuttle.documents import DocumentRecord
 from student_shuttle.notifications import NotificationRecord
 
 
@@ -179,6 +180,25 @@ def notification_to_dict(notification: NotificationRecord) -> dict[str, Any]:
         "last_error": notification.last_error,
         "created_at": _optional_datetime_to_str(notification.created_at),
         "updated_at": _optional_datetime_to_str(notification.updated_at),
+    }
+
+
+def document_to_dict(document: DocumentRecord) -> dict[str, Any]:
+    return {
+        "id": str(document.id),
+        "booking_id": str(document.booking_id),
+        "type": document.type.value,
+        "file_ref": document.file_ref,
+        "payload": document.payload,
+        "signed_by_driver_at": _optional_datetime_to_str(document.signed_by_driver_at),
+        "signed_by_host_at": _optional_datetime_to_str(document.signed_by_host_at),
+        "signed_by_welfare_officer_at": _optional_datetime_to_str(
+            document.signed_by_welfare_officer_at
+        ),
+        "retention_until": _datetime_to_str(document.retention_until),
+        "created_at": _datetime_to_str(document.created_at),
+        "updated_at": _optional_datetime_to_str(document.updated_at),
+        "is_fully_signed": document.is_fully_signed_under_18_receipt(),
     }
 
 

@@ -15,7 +15,12 @@ from typing import Any, Callable
 from student_shuttle.booking import BookingRuleError
 from student_shuttle.notification_worker import NotificationWorker
 from student_shuttle.repository import BookingNotFoundError, SQLiteBookingRepository
-from student_shuttle.serialization import booking_to_dict, event_to_dict, notification_to_dict
+from student_shuttle.serialization import (
+    booking_to_dict,
+    document_to_dict,
+    event_to_dict,
+    notification_to_dict,
+)
 from student_shuttle.service import BookingService
 
 
@@ -47,6 +52,17 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
                         "notifications": [
                             notification_to_dict(notification)
                             for notification in notifications
+                        ]
+                    },
+                )
+                return
+            if suffix == "/documents":
+                documents = self.service.repository.list_documents(booking_id)
+                self._write_json(
+                    HTTPStatus.OK,
+                    {
+                        "documents": [
+                            document_to_dict(document) for document in documents
                         ]
                     },
                 )
@@ -83,6 +99,15 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
                     {"notification": notification_to_dict(notification)},
                 )
                 return
+            if self.path.startswith("/documents/") and self.path.endswith("/sign"):
+                document_id = self.path.split("?")[0].strip("/").split("/")[1]
+                payload = self._read_json()
+                document = self.service.sign_handover_receipt(document_id, payload)
+                self._write_json(
+                    HTTPStatus.OK,
+                    {"document": document_to_dict(document)},
+                )
+                return
 
             booking_id, suffix = self._parse_booking_route()
             if suffix == "/notifications/plan":
@@ -95,6 +120,14 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
                             for notification in notifications
                         ]
                     },
+                )
+                return
+            if suffix == "/handover-receipts":
+                payload = self._read_json()
+                document = self.service.create_handover_receipt(booking_id, payload)
+                self._write_json(
+                    HTTPStatus.CREATED,
+                    {"document": document_to_dict(document)},
                 )
                 return
             actions: dict[str, Callable[[str, dict[str, Any]], Any]] = {

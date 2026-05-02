@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -12,6 +12,7 @@ from student_shuttle.booking import (
     Airport,
     BookerType,
     Booking,
+    BookingRuleError,
     Driver,
     Event,
     FareComponents,
@@ -21,6 +22,7 @@ from student_shuttle.booking import (
     SignedDocument,
     VehicleSnapshot,
 )
+from student_shuttle.documents import DocumentRecord, DocumentType
 from student_shuttle.repository import SQLiteBookingRepository
 
 
@@ -118,13 +120,20 @@ class BookingService:
 
     def close_booking(self, booking_id: UUID | str, data: dict) -> tuple[Booking, Event]:
         booking = self.repository.get_booking(booking_id)
+        handover_receipt = None
+        if data.get("handover_receipt_id"):
+            handover_receipt = self.repository.get_document(
+                data["handover_receipt_id"]
+            ).to_signed_document()
+        elif booking.is_under_18:
+            raise BookingRuleError("under-18 closure requires a stored handover_receipt_id")
+        elif data.get("handover_receipt"):
+            handover_receipt = _document_from_data(data["handover_receipt"])
         event = booking.close(
             event_sink=self.repository,
             actor_id=UUID(data["actor_id"]),
             actor_type=ActorType(data.get("actor_type", ActorType.DRIVER.value)),
-            handover_receipt=_document_from_data(data["handover_receipt"])
-            if data.get("handover_receipt")
-            else None,
+            handover_receipt=handover_receipt,
             grace_period_elapsed=bool(data.get("grace_period_elapsed", False)),
             driver_payment_amount=_money_from_data(data["driver_payment_amount"])
             if data.get("driver_payment_amount")
@@ -133,6 +142,56 @@ class BookingService:
         )
         self.repository.save_booking(booking)
         return booking, event
+
+    def create_handover_receipt(self, booking_id: UUID | str, data: dict) -> DocumentRecord:
+        booking = self.repository.get_booking(booking_id)
+        if not booking.is_under_18:
+            raise BookingRuleError("handover receipts are only required for under-18 bookings")
+        if booking.arrived_at is None:
+            raise BookingRuleError("handover receipt requires booking to be ARRIVED")
+        created_at = _parse_optional_datetime(data.get("created_at")) or _utc_now()
+        retention_until = created_at + timedelta(days=365 * 7)
+        payload = {
+            "booking_id": str(booking.id),
+            "student_id": str(booking.student_id),
+            "institution_id": str(booking.institution_id) if booking.institution_id else None,
+            "driver_id": str(booking.driver_id) if booking.driver_id else None,
+            "vehicle_plate": booking.vehicle_snapshot.plate if booking.vehicle_snapshot else None,
+            "arrival_time": booking.arrived_at.isoformat() if booking.arrived_at else None,
+            "destination": {
+                "line1": booking.destination.line1,
+                "line2": booking.destination.line2,
+                "suburb": booking.destination.suburb,
+                "postcode": booking.destination.postcode,
+                "state": booking.destination.state,
+            },
+            "handover_to": data.get("handover_to"),
+        }
+        document = DocumentRecord(
+            booking_id=booking.id,
+            type=DocumentType.HANDOVER_RECEIPT,
+            file_ref=data.get("file_ref"),
+            payload=payload,
+            retention_until=retention_until,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        return self.repository.save_document(document)
+
+    def sign_handover_receipt(self, document_id: UUID | str, data: dict) -> DocumentRecord:
+        document = self.repository.get_document(document_id)
+        signed_at = _parse_optional_datetime(data.get("signed_at")) or _utc_now()
+        signer_type = data["signer_type"]
+        if signer_type == "driver":
+            document.signed_by_driver_at = signed_at
+        elif signer_type == "host":
+            document.signed_by_host_at = signed_at
+        elif signer_type == "welfare_officer":
+            document.signed_by_welfare_officer_at = signed_at
+        else:
+            raise ValueError("signer_type must be driver, host, or welfare_officer")
+        document.updated_at = signed_at
+        return self.repository.save_document(document)
 
     def cancel_booking(self, booking_id: UUID | str, data: dict) -> tuple[Booking, Event]:
         booking = self.repository.get_booking(booking_id)
@@ -236,3 +295,7 @@ def _optional_uuid(value: str | None) -> UUID | None:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)

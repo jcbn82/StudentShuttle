@@ -196,6 +196,114 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_under_18_close_requires_stored_signed_handover_receipt(self) -> None:
+        booking, _ = self.service.create_booking(self._under_18_booking_payload())
+        self.service.assign_driver(
+            booking.id,
+            {"actor_id": self.actor_id, "driver": self._driver_payload()},
+        )
+        self.service.mark_met(
+            booking.id,
+            {"actor_id": self.actor_id, "override_flight_check": True},
+        )
+        self.service.mark_arrived(booking.id, {"actor_id": self.actor_id})
+
+        receipt = self.service.create_handover_receipt(
+            booking.id,
+            {"handover_to": "Host Parent"},
+        )
+        expected_retention = receipt.created_at + timedelta(days=365 * 7)
+        self.assertEqual(receipt.retention_until.date(), expected_retention.date())
+
+        with self.assertRaisesRegex(ValueError, "persisted handover_receipt_id"):
+            self.service.close_booking(booking.id, {"actor_id": self.actor_id})
+
+        self.service.sign_handover_receipt(
+            receipt.id,
+            {"signer_type": "driver"},
+        )
+        with self.assertRaisesRegex(Exception, "host/welfare signatures"):
+            self.service.close_booking(
+                booking.id,
+                {"actor_id": self.actor_id, "handover_receipt_id": str(receipt.id)},
+            )
+
+        signed = self.service.sign_handover_receipt(
+            receipt.id,
+            {"signer_type": "host"},
+        )
+        self.assertTrue(signed.is_fully_signed_under_18_receipt())
+        closed_booking, event = self.service.close_booking(
+            booking.id,
+            {"actor_id": self.actor_id, "handover_receipt_id": str(receipt.id)},
+        )
+
+        self.assertEqual(closed_booking.state, BookingState.CLOSED)
+        self.assertEqual(str(closed_booking.handover_receipt_id), str(receipt.id))
+        self.assertEqual(event.event_type, EventType.BOOKING_CLOSED)
+
+    def test_api_creates_signs_and_uses_handover_receipt(self) -> None:
+        server = self._start_test_server()
+        try:
+            _, created_body = self._request(
+                "POST",
+                "/bookings",
+                self._under_18_booking_payload(),
+                server.server_port,
+            )
+            booking_id = created_body["booking"]["id"]
+            self._request(
+                "POST",
+                f"/bookings/{booking_id}/assign-driver",
+                {"actor_id": self.actor_id, "driver": self._driver_payload()},
+                server.server_port,
+            )
+            self._request(
+                "POST",
+                f"/bookings/{booking_id}/mark-met",
+                {"actor_id": self.actor_id, "override_flight_check": True},
+                server.server_port,
+            )
+            self._request(
+                "POST",
+                f"/bookings/{booking_id}/mark-arrived",
+                {"actor_id": self.actor_id},
+                server.server_port,
+            )
+
+            receipt_status, receipt_body = self._request(
+                "POST",
+                f"/bookings/{booking_id}/handover-receipts",
+                {"handover_to": "Host Parent"},
+                server.server_port,
+            )
+            self.assertEqual(receipt_status, 201)
+            receipt_id = receipt_body["document"]["id"]
+            self.assertFalse(receipt_body["document"]["is_fully_signed"])
+
+            for signer_type in ("driver", "welfare_officer"):
+                sign_status, sign_body = self._request(
+                    "POST",
+                    f"/documents/{receipt_id}/sign",
+                    {"signer_type": signer_type},
+                    server.server_port,
+                )
+                self.assertEqual(sign_status, 200)
+            self.assertTrue(sign_body["document"]["is_fully_signed"])
+
+            close_status, close_body = self._request(
+                "POST",
+                f"/bookings/{booking_id}/close",
+                {"actor_id": self.actor_id, "handover_receipt_id": receipt_id},
+                server.server_port,
+            )
+            self.assertEqual(close_status, 200)
+            self.assertEqual(close_body["booking"]["state"], "CLOSED")
+            self.assertEqual(close_body["booking"]["handover_receipt_id"], receipt_id)
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def _start_test_server(self):
         service = self.service
 
@@ -252,6 +360,25 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
             "actor_id": self.actor_id,
             "parent_contacts": [{"name": "Parent", "phone": "+8613000000000"}],
         }
+
+    def _under_18_booking_payload(self) -> dict:
+        payload = self._adult_booking_payload()
+        payload.update(
+            {
+                "is_under_18": True,
+                "booker_type": "INSTITUTION",
+                "payment_status": "UNPAID",
+                "institution_id": str(uuid4()),
+                "homestay_host_id": str(uuid4()),
+                "agent_id": str(uuid4()),
+                "fare_amount": {"amount": "145", "currency": "AUD"},
+                "fare_components": {
+                    "base": {"amount": "100", "currency": "AUD"},
+                    "under_18_surcharge": {"amount": "25", "currency": "AUD"},
+                },
+            }
+        )
+        return payload
 
     def _driver_payload(self) -> dict:
         return {
