@@ -300,6 +300,9 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
             self.assertEqual(close_status, 200)
             self.assertEqual(close_body["booking"]["state"], "CLOSED")
             self.assertEqual(close_body["booking"]["handover_receipt_id"], receipt_id)
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_incident_lifecycle_persists_without_changing_booking_state(self) -> None:
         booking = self._arrived_under_18_booking()
