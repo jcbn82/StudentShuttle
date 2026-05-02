@@ -39,6 +39,7 @@ Implemented lifecycle routes:
 - `GET /bookings/{booking_id}/notifications`
 - `GET /bookings/{booking_id}/documents`
 - `GET /bookings/{booking_id}/incidents`
+- `GET /bookings/{booking_id}/ledger`
 - `POST /bookings/{booking_id}/assign-driver`
 - `POST /bookings/{booking_id}/flight-update`
 - `POST /bookings/{booking_id}/mark-met`
@@ -88,3 +89,11 @@ Drivers can be persisted with vehicle details, Blue Card details, and retention
 tier. Availability windows are stored by airport. Assigning by `driver_id`
 requires an availability window that covers the booking pickup time; under-18
 bookings also require a current Blue Card that does not expire before pickup.
+
+## Cancellation ledger
+
+Cancellation creates payment ledger entries tied to the cancellation event:
+`BOOKED` bookings receive a full refund, `ASSIGNED` bookings receive a partial
+refund plus a driver cancellation fee, and `MET` bookings create a driver
+cancellation fee without a refund. Cancellation after arrival is still rejected
+by the booking state machine.
