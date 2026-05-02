@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from student_shuttle.booking import Booking, Event, EventType
 
@@ -27,6 +28,12 @@ class Channel(str, Enum):
     SLACK = "slack"
 
 
+class NotificationStatus(str, Enum):
+    PENDING = "pending"
+    SENT = "sent"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True)
 class Notification:
     event_id: UUID
@@ -35,6 +42,44 @@ class Notification:
     recipient_id: UUID | str
     channel: Channel
     template: str
+
+    @property
+    def idempotency_key(self) -> tuple[UUID, UUID | str, Channel]:
+        return (self.event_id, self.recipient_id, self.channel)
+
+
+@dataclass
+class NotificationRecord:
+    event_id: UUID
+    booking_id: UUID
+    recipient_type: RecipientType
+    recipient_id: UUID | str
+    channel: Channel
+    template: str
+    status: NotificationStatus = NotificationStatus.PENDING
+    attempts: int = 0
+    id: UUID = field(default_factory=uuid4)
+    last_error: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    @classmethod
+    def from_notification(
+        cls,
+        notification: Notification,
+        *,
+        created_at: datetime,
+    ) -> "NotificationRecord":
+        return cls(
+            event_id=notification.event_id,
+            booking_id=notification.booking_id,
+            recipient_type=notification.recipient_type,
+            recipient_id=notification.recipient_id,
+            channel=notification.channel,
+            template=notification.template,
+            created_at=created_at,
+            updated_at=created_at,
+        )
 
     @property
     def idempotency_key(self) -> tuple[UUID, UUID | str, Channel]:

@@ -13,8 +13,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
 from student_shuttle.booking import BookingRuleError
+from student_shuttle.notification_worker import NotificationWorker
 from student_shuttle.repository import BookingNotFoundError, SQLiteBookingRepository
-from student_shuttle.serialization import booking_to_dict, event_to_dict
+from student_shuttle.serialization import booking_to_dict, event_to_dict, notification_to_dict
 from student_shuttle.service import BookingService
 
 
@@ -22,6 +23,7 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
     """HTTP handler that dispatches booking lifecycle actions."""
 
     service: BookingService
+    notification_worker: NotificationWorker
 
     def do_GET(self) -> None:
         try:
@@ -37,6 +39,18 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
                     {"events": [event_to_dict(event) for event in events]},
                 )
                 return
+            if suffix == "/notifications":
+                notifications = self.service.repository.list_notifications(booking_id)
+                self._write_json(
+                    HTTPStatus.OK,
+                    {
+                        "notifications": [
+                            notification_to_dict(notification)
+                            for notification in notifications
+                        ]
+                    },
+                )
+                return
             self._write_json(HTTPStatus.NOT_FOUND, {"error": "route not found"})
         except BookingNotFoundError as exc:
             self._write_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
@@ -50,8 +64,39 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
                 booking, event = self.service.create_booking(payload)
                 self._write_transition(HTTPStatus.CREATED, booking, event)
                 return
+            if self.path == "/notifications/deliver-pending":
+                delivered = self.notification_worker.deliver_pending()
+                self._write_json(
+                    HTTPStatus.OK,
+                    {
+                        "notifications": [
+                            notification_to_dict(notification) for notification in delivered
+                        ]
+                    },
+                )
+                return
+            if self.path.startswith("/notifications/") and self.path.endswith("/retry"):
+                notification_id = self.path.split("?")[0].strip("/").split("/")[1]
+                notification = self.notification_worker.retry(notification_id)
+                self._write_json(
+                    HTTPStatus.OK,
+                    {"notification": notification_to_dict(notification)},
+                )
+                return
 
             booking_id, suffix = self._parse_booking_route()
+            if suffix == "/notifications/plan":
+                notifications = self.notification_worker.plan_for_booking(booking_id)
+                self._write_json(
+                    HTTPStatus.OK,
+                    {
+                        "notifications": [
+                            notification_to_dict(notification)
+                            for notification in notifications
+                        ]
+                    },
+                )
+                return
             actions: dict[str, Callable[[str, dict[str, Any]], Any]] = {
                 "/assign-driver": self.service.assign_driver,
                 "/flight-update": self.service.record_flight_update,
@@ -120,11 +165,13 @@ def create_server(
 ) -> ThreadingHTTPServer:
     repository = SQLiteBookingRepository(database_path)
     service = BookingService(repository)
+    notification_worker = NotificationWorker(repository)
 
     class ConfiguredBookingAPIHandler(BookingAPIHandler):
         pass
 
     ConfiguredBookingAPIHandler.service = service
+    ConfiguredBookingAPIHandler.notification_worker = notification_worker
     return ThreadingHTTPServer((host, port), ConfiguredBookingAPIHandler)
 
 

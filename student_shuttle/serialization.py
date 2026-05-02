@@ -22,6 +22,7 @@ from student_shuttle.booking import (
     PaymentStatus,
     VehicleSnapshot,
 )
+from student_shuttle.notifications import NotificationRecord
 
 
 def booking_to_dict(booking: Booking) -> dict[str, Any]:
@@ -162,6 +163,23 @@ def event_from_dict(data: dict[str, Any]) -> Event:
         timestamp=_datetime_from_str(data["timestamp"]),
         payload=data["payload"],
     )
+
+
+def notification_to_dict(notification: NotificationRecord) -> dict[str, Any]:
+    return {
+        "id": str(notification.id),
+        "event_id": str(notification.event_id),
+        "booking_id": str(notification.booking_id),
+        "recipient_type": notification.recipient_type.value,
+        "recipient_id": str(notification.recipient_id),
+        "channel": notification.channel.value,
+        "template": notification.template,
+        "status": notification.status.value,
+        "attempts": notification.attempts,
+        "last_error": notification.last_error,
+        "created_at": _optional_datetime_to_str(notification.created_at),
+        "updated_at": _optional_datetime_to_str(notification.updated_at),
+    }
 
 
 def _money_to_dict(money: Money) -> dict[str, str]:

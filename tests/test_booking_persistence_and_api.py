@@ -9,8 +9,9 @@ from uuid import uuid4
 
 from student_shuttle.api import BookingAPIHandler
 from student_shuttle.booking import BookingState, EventType
+from student_shuttle.notification_worker import NotificationWorker, RecordingDeliveryAdapter
+from student_shuttle.notifications import Channel, NotificationStatus
 from student_shuttle.repository import SQLiteBookingRepository
-from student_shuttle.serialization import booking_to_dict
 from student_shuttle.service import BookingService
 
 
@@ -18,6 +19,7 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
     def setUp(self) -> None:
         self.repository = SQLiteBookingRepository()
         self.service = BookingService(self.repository)
+        self.notification_worker = NotificationWorker(self.repository)
         self.actor_id = str(uuid4())
         self.pickup_at = datetime(2026, 7, 1, 8, tzinfo=timezone.utc)
         self.driver_id = str(uuid4())
@@ -44,6 +46,46 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
         self.assertEqual(str(loaded.driver_id), self.driver_id)
         self.assertEqual([event.event_type for event in events], [EventType.BOOKING_CREATED, EventType.DRIVER_ASSIGNED])
         self.assertEqual(assigned.event_type, EventType.DRIVER_ASSIGNED)
+
+    def test_notification_worker_plans_idempotently_and_delivers(self) -> None:
+        booking, _ = self.service.create_booking(self._adult_booking_payload())
+
+        planned_once = self.notification_worker.plan_for_booking(str(booking.id))
+        planned_twice = self.notification_worker.plan_for_booking(str(booking.id))
+        delivered = self.notification_worker.deliver_pending()
+
+        self.assertEqual(len(planned_once), 2)
+        self.assertEqual(
+            {notification.id for notification in planned_once},
+            {notification.id for notification in planned_twice},
+        )
+        self.assertEqual(len(self.repository.list_notifications(booking.id)), 2)
+        self.assertTrue(all(notification.status == NotificationStatus.SENT for notification in delivered))
+
+    def test_notification_retry_after_failure(self) -> None:
+        sms_adapter = RecordingDeliveryAdapter(Channel.SMS, fail_templates={"booking_confirmed"})
+        worker = NotificationWorker(
+            self.repository,
+            adapters={
+                Channel.EMAIL: RecordingDeliveryAdapter(Channel.EMAIL),
+                Channel.EMAIL_DIGEST: RecordingDeliveryAdapter(Channel.EMAIL_DIGEST),
+                Channel.SMS: sms_adapter,
+                Channel.WHATSAPP: RecordingDeliveryAdapter(Channel.WHATSAPP),
+                Channel.SLACK: RecordingDeliveryAdapter(Channel.SLACK),
+            },
+        )
+        booking, _ = self.service.create_booking(self._adult_booking_payload())
+        planned = worker.plan_for_booking(str(booking.id))
+        student_sms = next(notification for notification in planned if notification.channel == Channel.SMS)
+
+        first_attempt = worker.retry(str(student_sms.id))
+        self.assertEqual(first_attempt.status, NotificationStatus.FAILED)
+        self.assertEqual(first_attempt.attempts, 1)
+
+        sms_adapter.fail_templates.clear()
+        second_attempt = worker.retry(str(student_sms.id))
+        self.assertEqual(second_attempt.status, NotificationStatus.SENT)
+        self.assertEqual(second_attempt.attempts, 2)
 
     def test_api_creates_fetches_and_transitions_booking(self) -> None:
         server = self._start_test_server()
@@ -107,6 +149,53 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_api_plans_lists_and_delivers_notifications(self) -> None:
+        server = self._start_test_server()
+        try:
+            _, created_body = self._request(
+                "POST",
+                "/bookings",
+                self._adult_booking_payload(),
+                server.server_port,
+            )
+            booking_id = created_body["booking"]["id"]
+
+            planned_status, planned_body = self._request(
+                "POST",
+                f"/bookings/{booking_id}/notifications/plan",
+                {},
+                server.server_port,
+            )
+            self.assertEqual(planned_status, 200)
+            self.assertEqual(len(planned_body["notifications"]), 2)
+
+            listed_status, listed_body = self._request(
+                "GET",
+                f"/bookings/{booking_id}/notifications",
+                None,
+                server.server_port,
+            )
+            self.assertEqual(listed_status, 200)
+            self.assertEqual(
+                [notification["status"] for notification in listed_body["notifications"]],
+                ["pending", "pending"],
+            )
+
+            delivered_status, delivered_body = self._request(
+                "POST",
+                "/notifications/deliver-pending",
+                {},
+                server.server_port,
+            )
+            self.assertEqual(delivered_status, 200)
+            self.assertEqual(
+                {notification["status"] for notification in delivered_body["notifications"]},
+                {"sent"},
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def _start_test_server(self):
         service = self.service
 
@@ -114,6 +203,7 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
             pass
 
         TestHandler.service = service
+        TestHandler.notification_worker = self.notification_worker
 
         from http.server import ThreadingHTTPServer
 
