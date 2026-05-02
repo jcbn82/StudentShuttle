@@ -38,6 +38,7 @@ Implemented lifecycle routes:
 - `GET /bookings/{booking_id}/events`
 - `GET /bookings/{booking_id}/notifications`
 - `GET /bookings/{booking_id}/documents`
+- `GET /bookings/{booking_id}/incidents`
 - `POST /bookings/{booking_id}/assign-driver`
 - `POST /bookings/{booking_id}/flight-update`
 - `POST /bookings/{booking_id}/mark-met`
@@ -50,6 +51,8 @@ Implemented lifecycle routes:
 - `POST /notifications/deliver-pending`
 - `POST /notifications/{notification_id}/retry`
 - `POST /documents/{document_id}/sign`
+- `POST /incidents/{incident_id}/triage`
+- `POST /incidents/{incident_id}/resolve`
 
 ## Notifications
 
@@ -67,3 +70,10 @@ Under-18 bookings must close with a persisted handover receipt. Create a receipt
 after arrival, sign it as the driver and either the host or welfare officer, then
 close the booking with `handover_receipt_id`. Receipt documents include payload
 metadata and a seven-year retention date.
+
+## Incidents
+
+Incidents are a side branch: raising one persists an incident record and emits an
+`incident_raised` event without changing the booking's primary state. Incidents
+start `open`, can be marked `triaged`, and can then be `resolved` with
+resolution notes.
