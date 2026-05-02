@@ -18,6 +18,7 @@ from student_shuttle.notifications import (
     NotificationStatus,
     RecipientType,
 )
+from student_shuttle.payments import LedgerEntry, LedgerEntryType
 from student_shuttle.serialization import booking_from_dict, booking_to_dict, event_from_dict
 
 
@@ -151,6 +152,22 @@ class SQLiteBookingRepository(EventSink):
 
             CREATE INDEX IF NOT EXISTS driver_availability_lookup_idx
                 ON driver_availability (airport, starts_at, ends_at);
+
+            CREATE TABLE IF NOT EXISTS ledger_entries (
+                id TEXT PRIMARY KEY,
+                booking_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                entry_type TEXT NOT NULL,
+                amount TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                description TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (booking_id) REFERENCES bookings(id),
+                FOREIGN KEY (event_id) REFERENCES events(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS ledger_booking_idx
+                ON ledger_entries (booking_id, created_at);
             """
         )
         self.connection.commit()
@@ -600,6 +617,50 @@ class SQLiteBookingRepository(EventSink):
         ).fetchall()
         return tuple(self._availability_from_row(row) for row in rows)
 
+    def save_ledger_entry(self, entry: LedgerEntry) -> LedgerEntry:
+        self.connection.execute(
+            """
+            INSERT INTO ledger_entries (
+                id, booking_id, event_id, entry_type, amount, currency,
+                description, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(entry.id),
+                str(entry.booking_id),
+                str(entry.event_id),
+                entry.entry_type.value,
+                str(entry.amount.amount),
+                entry.amount.currency,
+                entry.description,
+                entry.created_at.isoformat(),
+            ),
+        )
+        self.connection.commit()
+        return entry
+
+    def save_ledger_entries(
+        self, entries: Iterable[LedgerEntry]
+    ) -> tuple[LedgerEntry, ...]:
+        saved = []
+        for entry in entries:
+            saved.append(self.save_ledger_entry(entry))
+        return tuple(saved)
+
+    def list_ledger_entries(self, booking_id: UUID | str) -> tuple[LedgerEntry, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, booking_id, event_id, entry_type, amount, currency,
+                   description, created_at
+            FROM ledger_entries
+            WHERE booking_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (str(booking_id),),
+        ).fetchall()
+        return tuple(self._ledger_from_row(row) for row in rows)
+
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> Event:
         data = dict(row)
@@ -707,6 +768,23 @@ class SQLiteBookingRepository(EventSink):
             airport=Airport(data["airport"]),
             starts_at=datetime.fromisoformat(data["starts_at"]),
             ends_at=datetime.fromisoformat(data["ends_at"]),
+            created_at=datetime.fromisoformat(data["created_at"]),
+        )
+
+    @staticmethod
+    def _ledger_from_row(row: sqlite3.Row) -> LedgerEntry:
+        from datetime import datetime
+        from decimal import Decimal
+        from student_shuttle.booking import Money
+
+        data = dict(row)
+        return LedgerEntry(
+            id=UUID(data["id"]),
+            booking_id=UUID(data["booking_id"]),
+            event_id=UUID(data["event_id"]),
+            entry_type=LedgerEntryType(data["entry_type"]),
+            amount=Money(amount=Decimal(data["amount"]), currency=data["currency"]),
+            description=data["description"],
             created_at=datetime.fromisoformat(data["created_at"]),
         )
 

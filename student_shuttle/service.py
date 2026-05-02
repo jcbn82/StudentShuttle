@@ -25,6 +25,7 @@ from student_shuttle.booking import (
 from student_shuttle.documents import DocumentRecord, DocumentType
 from student_shuttle.drivers import DriverAvailability, DriverRecord
 from student_shuttle.incidents import IncidentRecord, IncidentStatus
+from student_shuttle.payments import LedgerEntry, LedgerEntryType
 from student_shuttle.repository import SQLiteBookingRepository
 
 
@@ -266,8 +267,11 @@ class BookingService:
         document.updated_at = signed_at
         return self.repository.save_document(document)
 
-    def cancel_booking(self, booking_id: UUID | str, data: dict) -> tuple[Booking, Event]:
+    def cancel_booking(
+        self, booking_id: UUID | str, data: dict
+    ) -> tuple[Booking, Event, tuple[LedgerEntry, ...]]:
         booking = self.repository.get_booking(booking_id)
+        state_before_cancel = booking.state
         event = booking.cancel(
             reason=data["reason"],
             event_sink=self.repository,
@@ -275,8 +279,83 @@ class BookingService:
             actor_type=ActorType(data.get("actor_type", ActorType.BUYER.value)),
             now=_parse_optional_datetime(data.get("now")),
         )
+        ledger_entries = self._apply_cancellation_policy(
+            booking,
+            event,
+            state_before_cancel,
+        )
         self.repository.save_booking(booking)
-        return booking, event
+        return booking, event, ledger_entries
+
+    def _apply_cancellation_policy(
+        self,
+        booking: Booking,
+        event: Event,
+        state_before_cancel,
+    ) -> tuple[LedgerEntry, ...]:
+        entries: list[LedgerEntry] = []
+        if state_before_cancel.value == "BOOKED":
+            entries.append(
+                self._ledger_entry(
+                    booking,
+                    event,
+                    LedgerEntryType.REFUND,
+                    booking.fare_amount,
+                    "Full refund for cancellation before driver assignment",
+                )
+            )
+            booking.payment_status = PaymentStatus.REFUNDED
+        elif state_before_cancel.value == "ASSIGNED":
+            refund = _percentage_money(booking.fare_amount, Decimal("0.50"))
+            entries.append(
+                self._ledger_entry(
+                    booking,
+                    event,
+                    LedgerEntryType.REFUND,
+                    refund,
+                    "Partial refund for cancellation after driver assignment",
+                )
+            )
+            entries.append(
+                self._ledger_entry(
+                    booking,
+                    event,
+                    LedgerEntryType.DRIVER_CANCELLATION_FEE,
+                    Money.aud("25"),
+                    "Driver cancellation fee after assignment",
+                )
+            )
+            booking.payment_status = PaymentStatus.PARTIAL_REFUND
+        elif state_before_cancel.value == "MET":
+            entries.append(
+                self._ledger_entry(
+                    booking,
+                    event,
+                    LedgerEntryType.DRIVER_CANCELLATION_FEE,
+                    Money.aud("50"),
+                    "Driver cancellation fee after pickup",
+                )
+            )
+        for entry in entries:
+            self.repository.save_ledger_entry(entry)
+        return tuple(entries)
+
+    @staticmethod
+    def _ledger_entry(
+        booking: Booking,
+        event: Event,
+        entry_type: LedgerEntryType,
+        amount: Money,
+        description: str,
+    ) -> LedgerEntry:
+        return LedgerEntry(
+            booking_id=booking.id,
+            event_id=event.id,
+            entry_type=entry_type,
+            amount=amount,
+            description=description,
+            created_at=event.timestamp,
+        )
 
     def raise_incident(
         self, booking_id: UUID | str, data: dict
@@ -392,6 +471,10 @@ def _money_from_data(data: dict) -> Money:
         amount=Decimal(str(data["amount"])),
         currency=data["currency"],
     )
+
+
+def _percentage_money(money: Money, percentage: Decimal) -> Money:
+    return Money(amount=(money.amount * percentage).quantize(Decimal("0.01")), currency=money.currency)
 
 
 def _parse_datetime(value: str) -> datetime:

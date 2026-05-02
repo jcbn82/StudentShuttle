@@ -22,6 +22,7 @@ from student_shuttle.serialization import (
     driver_to_dict,
     event_to_dict,
     incident_to_dict,
+    ledger_entry_to_dict,
     notification_to_dict,
 )
 from student_shuttle.service import BookingService
@@ -84,6 +85,13 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
                             incident_to_dict(incident) for incident in incidents
                         ]
                     },
+                )
+                return
+            if suffix == "/ledger":
+                entries = self.service.repository.list_ledger_entries(booking_id)
+                self._write_json(
+                    HTTPStatus.OK,
+                    {"ledger": [ledger_entry_to_dict(entry) for entry in entries]},
                 )
                 return
             if suffix == "/eligible-drivers":
@@ -214,7 +222,19 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
                 return
 
             payload = self._read_json()
-            booking, event = action(booking_id, payload)
+            result = action(booking_id, payload)
+            if suffix == "/cancel":
+                booking, event, entries = result
+                self._write_json(
+                    HTTPStatus.OK,
+                    {
+                        "booking": booking_to_dict(booking),
+                        "event": event_to_dict(event),
+                        "ledger": [ledger_entry_to_dict(entry) for entry in entries],
+                    },
+                )
+                return
+            booking, event = result
             self._write_transition(HTTPStatus.OK, booking, event)
         except BookingNotFoundError as exc:
             self._write_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})

@@ -4,6 +4,7 @@ import json
 import threading
 import unittest
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from http.client import HTTPConnection
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from student_shuttle.api import BookingAPIHandler
 from student_shuttle.booking import BookingState, EventType
 from student_shuttle.notification_worker import NotificationWorker, RecordingDeliveryAdapter
 from student_shuttle.notifications import Channel, NotificationStatus, RecipientType
+from student_shuttle.payments import LedgerEntryType
 from student_shuttle.repository import SQLiteBookingRepository
 from student_shuttle.service import BookingService
 
@@ -139,6 +141,72 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
         self.assertEqual(assigned_booking.driver_id, driver.id)
         self.assertEqual(assigned_booking.vehicle_snapshot.plate, "ABC123")
         self.assertEqual(event.event_type, EventType.DRIVER_ASSIGNED)
+
+    def test_cancellation_policy_for_booked_booking_creates_full_refund(self) -> None:
+        booking, _ = self.service.create_booking(self._adult_booking_payload())
+
+        cancelled, event, entries = self.service.cancel_booking(
+            booking.id,
+            {
+                "actor_id": self.actor_id,
+                "reason": "Plans changed",
+            },
+        )
+
+        self.assertEqual(cancelled.state, BookingState.CANCELLED)
+        self.assertEqual(cancelled.payment_status.value, "REFUNDED")
+        self.assertEqual(event.event_type, EventType.BOOKING_CANCELLED)
+        self.assertEqual([entry.entry_type for entry in entries], [LedgerEntryType.REFUND])
+        self.assertEqual(entries[0].amount.amount, booking.fare_amount.amount)
+
+    def test_cancellation_policy_for_assigned_booking_creates_partial_refund_and_driver_fee(self) -> None:
+        booking, _ = self.service.create_booking(self._adult_booking_payload())
+        self.service.assign_driver(
+            booking.id,
+            {"actor_id": self.actor_id, "driver": self._driver_payload()},
+        )
+
+        cancelled, _, entries = self.service.cancel_booking(
+            booking.id,
+            {
+                "actor_id": self.actor_id,
+                "reason": "Cancelled after assignment",
+            },
+        )
+
+        self.assertEqual(cancelled.payment_status.value, "PARTIAL_REFUND")
+        self.assertEqual(
+            [entry.entry_type for entry in entries],
+            [LedgerEntryType.REFUND, LedgerEntryType.DRIVER_CANCELLATION_FEE],
+        )
+        self.assertEqual(entries[0].amount.amount, booking.fare_amount.amount * Decimal("0.50"))
+        self.assertEqual(entries[1].amount.amount, Decimal("25"))
+
+    def test_cancellation_policy_for_met_booking_creates_driver_fee_only(self) -> None:
+        booking, _ = self.service.create_booking(self._adult_booking_payload())
+        self.service.assign_driver(
+            booking.id,
+            {"actor_id": self.actor_id, "driver": self._driver_payload()},
+        )
+        self.service.mark_met(
+            booking.id,
+            {"actor_id": self.actor_id, "override_flight_check": True},
+        )
+
+        cancelled, _, entries = self.service.cancel_booking(
+            booking.id,
+            {
+                "actor_id": self.actor_id,
+                "reason": "Cancelled after pickup issue",
+            },
+        )
+
+        self.assertEqual(cancelled.payment_status.value, "PAID")
+        self.assertEqual(
+            [entry.entry_type for entry in entries],
+            [LedgerEntryType.DRIVER_CANCELLATION_FEE],
+        )
+        self.assertEqual(entries[0].amount.amount, Decimal("50"))
 
     def test_api_creates_fetches_and_transitions_booking(self) -> None:
         server = self._start_test_server()
@@ -511,6 +579,45 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
             )
             self.assertEqual(assign_status, 200)
             self.assertEqual(assign_body["booking"]["driver_id"], driver_id)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_api_cancel_returns_and_lists_ledger_entries(self) -> None:
+        server = self._start_test_server()
+        try:
+            _, created_body = self._request(
+                "POST",
+                "/bookings",
+                self._adult_booking_payload(),
+                server.server_port,
+            )
+            booking_id = created_body["booking"]["id"]
+
+            cancel_status, cancel_body = self._request(
+                "POST",
+                f"/bookings/{booking_id}/cancel",
+                {"actor_id": self.actor_id, "reason": "Plans changed"},
+                server.server_port,
+            )
+            self.assertEqual(cancel_status, 200)
+            self.assertEqual(cancel_body["booking"]["payment_status"], "REFUNDED")
+            self.assertEqual(
+                [entry["entry_type"] for entry in cancel_body["ledger"]],
+                ["refund"],
+            )
+
+            ledger_status, ledger_body = self._request(
+                "GET",
+                f"/bookings/{booking_id}/ledger",
+                None,
+                server.server_port,
+            )
+            self.assertEqual(ledger_status, 200)
+            self.assertEqual(
+                [entry["entry_type"] for entry in ledger_body["ledger"]],
+                ["refund"],
+            )
         finally:
             server.shutdown()
             server.server_close()

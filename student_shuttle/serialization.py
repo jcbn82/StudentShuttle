@@ -26,6 +26,7 @@ from student_shuttle.documents import DocumentRecord
 from student_shuttle.drivers import DriverAvailability, DriverRecord
 from student_shuttle.incidents import IncidentRecord
 from student_shuttle.notifications import NotificationRecord
+from student_shuttle.payments import LedgerEntry
 
 
 def booking_to_dict(booking: Booking) -> dict[str, Any]:
@@ -247,6 +248,18 @@ def availability_to_dict(availability: DriverAvailability) -> dict[str, Any]:
         "starts_at": _datetime_to_str(availability.starts_at),
         "ends_at": _datetime_to_str(availability.ends_at),
         "created_at": _optional_datetime_to_str(availability.created_at),
+    }
+
+
+def ledger_entry_to_dict(entry: LedgerEntry) -> dict[str, Any]:
+    return {
+        "id": str(entry.id),
+        "booking_id": str(entry.booking_id),
+        "event_id": str(entry.event_id),
+        "entry_type": entry.entry_type.value,
+        "amount": _money_to_dict(entry.amount),
+        "description": entry.description,
+        "created_at": _datetime_to_str(entry.created_at),
     }
 
 
