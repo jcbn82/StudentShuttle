@@ -23,6 +23,7 @@ from student_shuttle.booking import (
     VehicleSnapshot,
 )
 from student_shuttle.documents import DocumentRecord, DocumentType
+from student_shuttle.incidents import IncidentRecord, IncidentStatus
 from student_shuttle.repository import SQLiteBookingRepository
 
 
@@ -205,18 +206,55 @@ class BookingService:
         self.repository.save_booking(booking)
         return booking, event
 
-    def raise_incident(self, booking_id: UUID | str, data: dict) -> tuple[Booking, Event]:
+    def raise_incident(
+        self, booking_id: UUID | str, data: dict
+    ) -> tuple[Booking, Event, IncidentRecord]:
         booking = self.repository.get_booking(booking_id)
+        actor_id = UUID(data["actor_id"])
+        actor_type = ActorType(data["actor_type"])
         event = booking.raise_incident(
             severity=data["severity"],
             description=data["description"],
             event_sink=self.repository,
-            actor_id=UUID(data["actor_id"]),
-            actor_type=ActorType(data["actor_type"]),
+            actor_id=actor_id,
+            actor_type=actor_type,
             now=_parse_optional_datetime(data.get("now")),
         )
+        incident = IncidentRecord(
+            booking_id=booking.id,
+            event_id=event.id,
+            severity=data["severity"],
+            description=data["description"],
+            raised_by=actor_id,
+            raised_by_type=actor_type,
+            raised_at=event.timestamp,
+            updated_at=event.timestamp,
+        )
+        self.repository.save_incident(incident)
         self.repository.save_booking(booking)
-        return booking, event
+        return booking, event, incident
+
+    def triage_incident(self, incident_id: UUID | str, data: dict) -> IncidentRecord:
+        incident = self.repository.get_incident(incident_id)
+        triaged_at = _parse_optional_datetime(data.get("triaged_at")) or _utc_now()
+        incident.status = IncidentStatus.TRIAGED
+        incident.triaged_by = UUID(data["actor_id"])
+        incident.triaged_at = triaged_at
+        incident.updated_at = triaged_at
+        return self.repository.save_incident(incident)
+
+    def resolve_incident(self, incident_id: UUID | str, data: dict) -> IncidentRecord:
+        incident = self.repository.get_incident(incident_id)
+        resolved_at = _parse_optional_datetime(data.get("resolved_at")) or _utc_now()
+        incident.status = IncidentStatus.RESOLVED
+        if incident.triaged_at is None:
+            incident.triaged_at = resolved_at
+            incident.triaged_by = UUID(data["actor_id"])
+        incident.resolution_notes = data["resolution_notes"]
+        incident.resolved_by = UUID(data["actor_id"])
+        incident.resolved_at = resolved_at
+        incident.updated_at = resolved_at
+        return self.repository.save_incident(incident)
 
 
 def _address_from_data(data: dict) -> Address:

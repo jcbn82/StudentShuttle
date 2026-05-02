@@ -10,7 +10,7 @@ from uuid import uuid4
 from student_shuttle.api import BookingAPIHandler
 from student_shuttle.booking import BookingState, EventType
 from student_shuttle.notification_worker import NotificationWorker, RecordingDeliveryAdapter
-from student_shuttle.notifications import Channel, NotificationStatus
+from student_shuttle.notifications import Channel, NotificationStatus, RecipientType
 from student_shuttle.repository import SQLiteBookingRepository
 from student_shuttle.service import BookingService
 
@@ -300,6 +300,109 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
             self.assertEqual(close_status, 200)
             self.assertEqual(close_body["booking"]["state"], "CLOSED")
             self.assertEqual(close_body["booking"]["handover_receipt_id"], receipt_id)
+
+    def test_incident_lifecycle_persists_without_changing_booking_state(self) -> None:
+        booking = self._arrived_under_18_booking()
+
+        booking_after_incident, event, incident = self.service.raise_incident(
+            booking.id,
+            {
+                "actor_id": self.actor_id,
+                "actor_type": "DRIVER",
+                "severity": "high",
+                "description": "Student not found at designated gate",
+            },
+        )
+
+        incidents = self.repository.list_incidents(booking.id)
+        self.assertEqual(booking_after_incident.state, BookingState.ARRIVED)
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0].event_id, event.id)
+        self.assertEqual(incidents[0].id, incident.id)
+        self.assertEqual(incidents[0].status.value, "open")
+
+        triaged = self.service.triage_incident(
+            incidents[0].id,
+            {"actor_id": self.actor_id},
+        )
+        self.assertEqual(triaged.status.value, "triaged")
+        resolved = self.service.resolve_incident(
+            incidents[0].id,
+            {"actor_id": self.actor_id, "resolution_notes": "Ops confirmed student is with host."},
+        )
+        self.assertEqual(resolved.status.value, "resolved")
+        self.assertEqual(resolved.resolution_notes, "Ops confirmed student is with host.")
+
+    def test_under_18_incident_notification_fanout_is_planned(self) -> None:
+        booking = self._arrived_under_18_booking()
+        _, event, _ = self.service.raise_incident(
+            booking.id,
+            {
+                "actor_id": self.actor_id,
+                "actor_type": "DRIVER",
+                "severity": "high",
+                "description": "Student not found at designated gate",
+            },
+        )
+
+        planned = self.notification_worker.plan_for_booking(str(booking.id))
+        incident_notifications = [
+            notification for notification in planned if notification.event_id == event.id
+        ]
+        recipient_types = {
+            notification.recipient_type for notification in incident_notifications
+        }
+        self.assertIn(RecipientType.PARENT, recipient_types)
+        self.assertIn(RecipientType.AGENT, recipient_types)
+        self.assertIn(RecipientType.INSTITUTION, recipient_types)
+        self.assertIn(RecipientType.OPS, recipient_types)
+
+    def test_api_raises_triages_and_resolves_incident(self) -> None:
+        server = self._start_test_server()
+        try:
+            booking_id = self._create_arrived_under_18_booking_via_api(server.server_port)
+
+            incident_status, incident_body = self._request(
+                "POST",
+                f"/bookings/{booking_id}/incidents",
+                {
+                    "actor_id": self.actor_id,
+                    "actor_type": "DRIVER",
+                    "severity": "medium",
+                    "description": "Host unreachable",
+                },
+                server.server_port,
+            )
+            self.assertEqual(incident_status, 201)
+            self.assertEqual(incident_body["booking"]["state"], "ARRIVED")
+
+            list_status, list_body = self._request(
+                "GET",
+                f"/bookings/{booking_id}/incidents",
+                None,
+                server.server_port,
+            )
+            self.assertEqual(list_status, 200)
+            incident_id = list_body["incidents"][0]["id"]
+            self.assertEqual(list_body["incidents"][0]["status"], "open")
+
+            triage_status, triage_body = self._request(
+                "POST",
+                f"/incidents/{incident_id}/triage",
+                {"actor_id": self.actor_id},
+                server.server_port,
+            )
+            self.assertEqual(triage_status, 200)
+            self.assertEqual(triage_body["incident"]["status"], "triaged")
+
+            resolve_status, resolve_body = self._request(
+                "POST",
+                f"/incidents/{incident_id}/resolve",
+                {"actor_id": self.actor_id, "resolution_notes": "Emergency contact reached."},
+                server.server_port,
+            )
+            self.assertEqual(resolve_status, 200)
+            self.assertEqual(resolve_body["incident"]["status"], "resolved")
         finally:
             server.shutdown()
             server.server_close()
@@ -337,6 +440,47 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
             return response.status, data
         finally:
             connection.close()
+
+    def _arrived_under_18_booking(self):
+        booking, _ = self.service.create_booking(self._under_18_booking_payload())
+        self.service.assign_driver(
+            booking.id,
+            {"actor_id": self.actor_id, "driver": self._driver_payload()},
+        )
+        self.service.mark_met(
+            booking.id,
+            {"actor_id": self.actor_id, "override_flight_check": True},
+        )
+        booking, _ = self.service.mark_arrived(booking.id, {"actor_id": self.actor_id})
+        return booking
+
+    def _create_arrived_under_18_booking_via_api(self, port: int) -> str:
+        _, created_body = self._request(
+            "POST",
+            "/bookings",
+            self._under_18_booking_payload(),
+            port,
+        )
+        booking_id = created_body["booking"]["id"]
+        self._request(
+            "POST",
+            f"/bookings/{booking_id}/assign-driver",
+            {"actor_id": self.actor_id, "driver": self._driver_payload()},
+            port,
+        )
+        self._request(
+            "POST",
+            f"/bookings/{booking_id}/mark-met",
+            {"actor_id": self.actor_id, "override_flight_check": True},
+            port,
+        )
+        self._request(
+            "POST",
+            f"/bookings/{booking_id}/mark-arrived",
+            {"actor_id": self.actor_id},
+            port,
+        )
+        return booking_id
 
     def _adult_booking_payload(self) -> dict:
         return {

@@ -19,6 +19,7 @@ from student_shuttle.serialization import (
     booking_to_dict,
     document_to_dict,
     event_to_dict,
+    incident_to_dict,
     notification_to_dict,
 )
 from student_shuttle.service import BookingService
@@ -67,6 +68,17 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
                     },
                 )
                 return
+            if suffix == "/incidents":
+                incidents = self.service.repository.list_incidents(booking_id)
+                self._write_json(
+                    HTTPStatus.OK,
+                    {
+                        "incidents": [
+                            incident_to_dict(incident) for incident in incidents
+                        ]
+                    },
+                )
+                return
             self._write_json(HTTPStatus.NOT_FOUND, {"error": "route not found"})
         except BookingNotFoundError as exc:
             self._write_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
@@ -108,6 +120,24 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
                     {"document": document_to_dict(document)},
                 )
                 return
+            if self.path.startswith("/incidents/") and self.path.endswith("/triage"):
+                incident_id = self.path.split("?")[0].strip("/").split("/")[1]
+                payload = self._read_json()
+                incident = self.service.triage_incident(incident_id, payload)
+                self._write_json(
+                    HTTPStatus.OK,
+                    {"incident": incident_to_dict(incident)},
+                )
+                return
+            if self.path.startswith("/incidents/") and self.path.endswith("/resolve"):
+                incident_id = self.path.split("?")[0].strip("/").split("/")[1]
+                payload = self._read_json()
+                incident = self.service.resolve_incident(incident_id, payload)
+                self._write_json(
+                    HTTPStatus.OK,
+                    {"incident": incident_to_dict(incident)},
+                )
+                return
 
             booking_id, suffix = self._parse_booking_route()
             if suffix == "/notifications/plan":
@@ -130,6 +160,18 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
                     {"document": document_to_dict(document)},
                 )
                 return
+            if suffix == "/incidents":
+                payload = self._read_json()
+                booking, event, incident = self.service.raise_incident(booking_id, payload)
+                self._write_json(
+                    HTTPStatus.CREATED,
+                    {
+                        "booking": booking_to_dict(booking),
+                        "event": event_to_dict(event),
+                        "incident": incident_to_dict(incident),
+                    },
+                )
+                return
             actions: dict[str, Callable[[str, dict[str, Any]], Any]] = {
                 "/assign-driver": self.service.assign_driver,
                 "/flight-update": self.service.record_flight_update,
@@ -137,7 +179,6 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
                 "/mark-arrived": self.service.mark_arrived,
                 "/close": self.service.close_booking,
                 "/cancel": self.service.cancel_booking,
-                "/incidents": self.service.raise_incident,
             }
             action = actions.get(suffix)
             if action is None:

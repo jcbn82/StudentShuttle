@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Iterable
 from uuid import UUID
 
-from student_shuttle.booking import Booking, Event, EventSink
+from student_shuttle.booking import ActorType, Booking, Event, EventSink
 from student_shuttle.documents import DocumentRecord, DocumentType
+from student_shuttle.incidents import IncidentRecord, IncidentStatus
 from student_shuttle.notifications import (
     Channel,
     NotificationRecord,
@@ -97,6 +98,32 @@ class SQLiteBookingRepository(EventSink):
 
             CREATE INDEX IF NOT EXISTS documents_booking_type_idx
                 ON documents (booking_id, type, created_at);
+
+            CREATE TABLE IF NOT EXISTS incidents (
+                id TEXT PRIMARY KEY,
+                booking_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                description TEXT NOT NULL,
+                raised_by TEXT NOT NULL,
+                raised_by_type TEXT NOT NULL,
+                raised_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                triaged_at TEXT,
+                triaged_by TEXT,
+                resolution_notes TEXT,
+                resolved_at TEXT,
+                resolved_by TEXT,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (booking_id) REFERENCES bookings(id),
+                FOREIGN KEY (event_id) REFERENCES events(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS incidents_booking_idx
+                ON incidents (booking_id, raised_at);
+
+            CREATE INDEX IF NOT EXISTS incidents_status_idx
+                ON incidents (status, raised_at);
             """
         )
         self.connection.commit()
@@ -348,6 +375,76 @@ class SQLiteBookingRepository(EventSink):
         ).fetchall()
         return tuple(self._document_from_row(row) for row in rows)
 
+    def save_incident(self, incident: IncidentRecord) -> IncidentRecord:
+        self.connection.execute(
+            """
+            INSERT INTO incidents (
+                id, booking_id, event_id, severity, description, raised_by,
+                raised_by_type, raised_at, status, triaged_at, triaged_by,
+                resolution_notes, resolved_at, resolved_by, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                severity = excluded.severity,
+                description = excluded.description,
+                status = excluded.status,
+                triaged_at = excluded.triaged_at,
+                triaged_by = excluded.triaged_by,
+                resolution_notes = excluded.resolution_notes,
+                resolved_at = excluded.resolved_at,
+                resolved_by = excluded.resolved_by,
+                updated_at = excluded.updated_at
+            """,
+            (
+                str(incident.id),
+                str(incident.booking_id),
+                str(incident.event_id),
+                incident.severity,
+                incident.description,
+                str(incident.raised_by),
+                incident.raised_by_type.value,
+                incident.raised_at.isoformat(),
+                incident.status.value,
+                _optional_datetime_to_str(incident.triaged_at),
+                str(incident.triaged_by) if incident.triaged_by else None,
+                incident.resolution_notes,
+                _optional_datetime_to_str(incident.resolved_at),
+                str(incident.resolved_by) if incident.resolved_by else None,
+                incident.updated_at.isoformat(),
+            ),
+        )
+        self.connection.commit()
+        return incident
+
+    def get_incident(self, incident_id: UUID | str) -> IncidentRecord:
+        row = self.connection.execute(
+            """
+            SELECT id, booking_id, event_id, severity, description, raised_by,
+                   raised_by_type, raised_at, status, triaged_at, triaged_by,
+                   resolution_notes, resolved_at, resolved_by, updated_at
+            FROM incidents
+            WHERE id = ?
+            """,
+            (str(incident_id),),
+        ).fetchone()
+        if row is None:
+            raise BookingNotFoundError(f"incident {incident_id} was not found")
+        return self._incident_from_row(row)
+
+    def list_incidents(self, booking_id: UUID | str) -> tuple[IncidentRecord, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, booking_id, event_id, severity, description, raised_by,
+                   raised_by_type, raised_at, status, triaged_at, triaged_by,
+                   resolution_notes, resolved_at, resolved_by, updated_at
+            FROM incidents
+            WHERE booking_id = ?
+            ORDER BY raised_at ASC, id ASC
+            """,
+            (str(booking_id),),
+        ).fetchall()
+        return tuple(self._incident_from_row(row) for row in rows)
+
     @staticmethod
     def _event_from_row(row: sqlite3.Row) -> Event:
         data = dict(row)
@@ -371,6 +468,29 @@ class SQLiteBookingRepository(EventSink):
             attempts=int(data["attempts"]),
             last_error=data["last_error"],
             created_at=datetime.fromisoformat(data["created_at"]),
+            updated_at=datetime.fromisoformat(data["updated_at"]),
+        )
+
+    @staticmethod
+    def _incident_from_row(row: sqlite3.Row) -> IncidentRecord:
+        from datetime import datetime
+
+        data = dict(row)
+        return IncidentRecord(
+            id=UUID(data["id"]),
+            booking_id=UUID(data["booking_id"]),
+            event_id=UUID(data["event_id"]),
+            severity=data["severity"],
+            description=data["description"],
+            raised_by=UUID(data["raised_by"]),
+            raised_by_type=ActorType(data["raised_by_type"]),
+            raised_at=datetime.fromisoformat(data["raised_at"]),
+            status=IncidentStatus(data["status"]),
+            triaged_at=_optional_datetime_from_str(data["triaged_at"]),
+            triaged_by=UUID(data["triaged_by"]) if data["triaged_by"] else None,
+            resolution_notes=data["resolution_notes"],
+            resolved_at=_optional_datetime_from_str(data["resolved_at"]),
+            resolved_by=UUID(data["resolved_by"]) if data["resolved_by"] else None,
             updated_at=datetime.fromisoformat(data["updated_at"]),
         )
 

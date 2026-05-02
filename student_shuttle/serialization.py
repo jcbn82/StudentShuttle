@@ -23,6 +23,7 @@ from student_shuttle.booking import (
     VehicleSnapshot,
 )
 from student_shuttle.documents import DocumentRecord
+from student_shuttle.incidents import IncidentRecord
 from student_shuttle.notifications import NotificationRecord
 
 
@@ -199,6 +200,26 @@ def document_to_dict(document: DocumentRecord) -> dict[str, Any]:
         "created_at": _datetime_to_str(document.created_at),
         "updated_at": _optional_datetime_to_str(document.updated_at),
         "is_fully_signed": document.is_fully_signed_under_18_receipt(),
+    }
+
+
+def incident_to_dict(incident: IncidentRecord) -> dict[str, Any]:
+    return {
+        "id": str(incident.id),
+        "booking_id": str(incident.booking_id),
+        "event_id": str(incident.event_id),
+        "severity": incident.severity,
+        "description": incident.description,
+        "raised_by": str(incident.raised_by),
+        "raised_by_type": incident.raised_by_type.value,
+        "raised_at": _datetime_to_str(incident.raised_at),
+        "status": incident.status.value,
+        "triaged_by": _optional_uuid_to_str(incident.triaged_by),
+        "triaged_at": _optional_datetime_to_str(incident.triaged_at),
+        "resolution_notes": incident.resolution_notes,
+        "resolved_by": _optional_uuid_to_str(incident.resolved_by),
+        "resolved_at": _optional_datetime_to_str(incident.resolved_at),
+        "updated_at": _optional_datetime_to_str(incident.updated_at),
     }
 
 
