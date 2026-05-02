@@ -36,6 +36,7 @@ Implemented lifecycle routes:
 - `POST /bookings`
 - `GET /bookings/{booking_id}`
 - `GET /bookings/{booking_id}/events`
+- `GET /bookings/{booking_id}/notifications`
 - `POST /bookings/{booking_id}/assign-driver`
 - `POST /bookings/{booking_id}/flight-update`
 - `POST /bookings/{booking_id}/mark-met`
@@ -43,3 +44,16 @@ Implemented lifecycle routes:
 - `POST /bookings/{booking_id}/close`
 - `POST /bookings/{booking_id}/cancel`
 - `POST /bookings/{booking_id}/incidents`
+- `POST /bookings/{booking_id}/notifications/plan`
+- `POST /notifications/deliver-pending`
+- `POST /notifications/{notification_id}/retry`
+
+## Notifications
+
+Notifications are derived from persisted booking events. Planning creates one
+notification record per `(event_id, recipient_id, channel)` idempotency key, so
+running the planner repeatedly will not duplicate delivery intents.
+
+The local notification worker uses recording adapters for email, email digest,
+SMS, WhatsApp, and Slack. These adapters make delivery state testable without
+external providers; production adapters can implement the same `send` method.
