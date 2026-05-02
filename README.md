@@ -53,6 +53,10 @@ Implemented lifecycle routes:
 - `POST /documents/{document_id}/sign`
 - `POST /incidents/{incident_id}/triage`
 - `POST /incidents/{incident_id}/resolve`
+- `POST /drivers`
+- `GET /drivers/{driver_id}`
+- `POST /drivers/{driver_id}/availability`
+- `GET /bookings/{booking_id}/eligible-drivers`
 
 ## Notifications
 
@@ -77,3 +81,10 @@ Incidents are a side branch: raising one persists an incident record and emits a
 `incident_raised` event without changing the booking's primary state. Incidents
 start `open`, can be marked `triaged`, and can then be `resolved` with
 resolution notes.
+
+## Driver allocation
+
+Drivers can be persisted with vehicle details, Blue Card details, and retention
+tier. Availability windows are stored by airport. Assigning by `driver_id`
+requires an availability window that covers the booking pickup time; under-18
+bookings also require a current Blue Card that does not expire before pickup.
