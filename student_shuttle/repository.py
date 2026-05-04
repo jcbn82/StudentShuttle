@@ -1,0 +1,666 @@
+"""SQLite persistence for bookings and their append-only event log."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+from typing import Iterable
+from uuid import UUID
+
+from student_shuttle.booking import ActorType, Booking, Event, EventSink
+from student_shuttle.documents import DocumentRecord, DocumentType
+from student_shuttle.drivers import DriverAvailability, DriverRecord
+from student_shuttle.incidents import IncidentRecord, IncidentStatus
+from student_shuttle.migrations import run_migrations
+from student_shuttle.notifications import (
+    Channel,
+    NotificationRecord,
+    NotificationStatus,
+    RecipientType,
+)
+from student_shuttle.payments import LedgerEntry, LedgerEntryType
+from student_shuttle.serialization import booking_from_dict, booking_to_dict, event_from_dict
+
+
+class BookingNotFoundError(LookupError):
+    """Raised when a booking cannot be found in persistence."""
+
+
+class SQLiteBookingRepository(EventSink):
+    """Persists booking snapshots and append-only events in SQLite."""
+
+    def __init__(self, database_path: str | Path = ":memory:") -> None:
+        self.database_path = str(database_path)
+        self.connection = sqlite3.connect(self.database_path, check_same_thread=False)
+        self.connection.row_factory = sqlite3.Row
+        self.initialize()
+
+    def initialize(self) -> None:
+        run_migrations(self.connection)
+
+    def close(self) -> None:
+        self.connection.close()
+
+    def save_booking(self, booking: Booking) -> None:
+        data = booking_to_dict(booking)
+        self.connection.execute(
+            """
+            INSERT INTO bookings (id, state, data, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                state = excluded.state,
+                data = excluded.data,
+                updated_at = excluded.updated_at
+            """,
+            (
+                str(booking.id),
+                booking.state.value,
+                json.dumps(data, sort_keys=True),
+                booking.updated_at.isoformat(),
+            ),
+        )
+        self.connection.commit()
+
+    def get_booking(self, booking_id: UUID | str) -> Booking:
+        row = self.connection.execute(
+            "SELECT data FROM bookings WHERE id = ?",
+            (str(booking_id),),
+        ).fetchone()
+        if row is None:
+            raise BookingNotFoundError(f"booking {booking_id} was not found")
+        return booking_from_dict(json.loads(row["data"]))
+
+    def list_events(self, booking_id: UUID | str) -> tuple[Event, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, booking_id, event_type, actor_id, actor_type, timestamp, payload
+            FROM events
+            WHERE booking_id = ?
+            ORDER BY timestamp ASC
+            """,
+            (str(booking_id),),
+        ).fetchall()
+        return tuple(self._event_from_row(row) for row in rows)
+
+    def append(self, event: Event) -> Event:
+        self.connection.execute(
+            """
+            INSERT INTO events (id, booking_id, event_type, actor_id, actor_type, timestamp, payload)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(event.id),
+                str(event.booking_id),
+                event.event_type.value,
+                str(event.actor_id),
+                event.actor_type.value,
+                event.timestamp.isoformat(),
+                json.dumps(event.payload, sort_keys=True),
+            ),
+        )
+        self.connection.commit()
+        return event
+
+    @property
+    def events(self) -> tuple[Event, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, booking_id, event_type, actor_id, actor_type, timestamp, payload
+            FROM events
+            ORDER BY timestamp ASC
+            """
+        ).fetchall()
+        return tuple(self._event_from_row(row) for row in rows)
+
+    def append_many(self, events: Iterable[Event]) -> None:
+        for event in events:
+            self.append(event)
+
+    def save_notification(self, notification: NotificationRecord) -> NotificationRecord:
+        """Persist a notification intent once per idempotency key."""
+        row = self.connection.execute(
+            """
+            SELECT id, event_id, booking_id, recipient_type, recipient_id, channel,
+                   template, status, attempts, last_error, created_at, updated_at
+            FROM notifications
+            WHERE event_id = ? AND recipient_id = ? AND channel = ?
+            """,
+            (
+                str(notification.event_id),
+                str(notification.recipient_id),
+                notification.channel.value,
+            ),
+        ).fetchone()
+        if row is not None:
+            return self._notification_from_row(row)
+
+        self.connection.execute(
+            """
+            INSERT INTO notifications (
+                id, event_id, booking_id, recipient_type, recipient_id, channel,
+                template, status, attempts, last_error, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(notification.id),
+                str(notification.event_id),
+                str(notification.booking_id),
+                notification.recipient_type.value,
+                str(notification.recipient_id),
+                notification.channel.value,
+                notification.template,
+                notification.status.value,
+                notification.attempts,
+                notification.last_error,
+                notification.created_at.isoformat() if notification.created_at else "",
+                notification.updated_at.isoformat() if notification.updated_at else "",
+            ),
+        )
+        self.connection.commit()
+        return notification
+
+    def list_notifications(self, booking_id: UUID | str) -> tuple[NotificationRecord, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, event_id, booking_id, recipient_type, recipient_id, channel,
+                   template, status, attempts, last_error, created_at, updated_at
+            FROM notifications
+            WHERE booking_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (str(booking_id),),
+        ).fetchall()
+        return tuple(self._notification_from_row(row) for row in rows)
+
+    def pending_notifications(self) -> tuple[NotificationRecord, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, event_id, booking_id, recipient_type, recipient_id, channel,
+                   template, status, attempts, last_error, created_at, updated_at
+            FROM notifications
+            WHERE status IN (?, ?)
+            ORDER BY created_at ASC, id ASC
+            """,
+            (NotificationStatus.PENDING.value, NotificationStatus.FAILED.value),
+        ).fetchall()
+        return tuple(self._notification_from_row(row) for row in rows)
+
+    def get_notification(self, notification_id: UUID | str) -> NotificationRecord:
+        row = self.connection.execute(
+            """
+            SELECT id, event_id, booking_id, recipient_type, recipient_id, channel,
+                   template, status, attempts, last_error, created_at, updated_at
+            FROM notifications
+            WHERE id = ?
+            """,
+            (str(notification_id),),
+        ).fetchone()
+        if row is None:
+            raise BookingNotFoundError(f"notification {notification_id} was not found")
+        return self._notification_from_row(row)
+
+    def update_notification_delivery(self, notification: NotificationRecord) -> NotificationRecord:
+        self.connection.execute(
+            """
+            UPDATE notifications
+            SET status = ?,
+                attempts = ?,
+                last_error = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                notification.status.value,
+                notification.attempts,
+                notification.last_error,
+                notification.updated_at.isoformat() if notification.updated_at else "",
+                str(notification.id),
+            ),
+        )
+        self.connection.commit()
+        return notification
+
+    def save_document(self, document: DocumentRecord) -> DocumentRecord:
+        self.connection.execute(
+            """
+            INSERT INTO documents (
+                id, booking_id, type, file_ref, payload, signed_by_driver_at,
+                signed_by_host_at, signed_by_welfare_officer_at, retention_until,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                file_ref = excluded.file_ref,
+                payload = excluded.payload,
+                signed_by_driver_at = excluded.signed_by_driver_at,
+                signed_by_host_at = excluded.signed_by_host_at,
+                signed_by_welfare_officer_at = excluded.signed_by_welfare_officer_at,
+                retention_until = excluded.retention_until,
+                updated_at = excluded.updated_at
+            """,
+            (
+                str(document.id),
+                str(document.booking_id),
+                document.type.value,
+                document.file_ref,
+                json.dumps(document.payload, sort_keys=True),
+                _optional_datetime_to_str(document.signed_by_driver_at),
+                _optional_datetime_to_str(document.signed_by_host_at),
+                _optional_datetime_to_str(document.signed_by_welfare_officer_at),
+                document.retention_until.isoformat(),
+                document.created_at.isoformat(),
+                (document.updated_at or document.created_at).isoformat(),
+            ),
+        )
+        self.connection.commit()
+        return document
+
+    def get_document(self, document_id: UUID | str) -> DocumentRecord:
+        row = self.connection.execute(
+            """
+            SELECT id, booking_id, type, file_ref, payload, signed_by_driver_at,
+                   signed_by_host_at, signed_by_welfare_officer_at, retention_until,
+                   created_at, updated_at
+            FROM documents
+            WHERE id = ?
+            """,
+            (str(document_id),),
+        ).fetchone()
+        if row is None:
+            raise BookingNotFoundError(f"document {document_id} was not found")
+        return self._document_from_row(row)
+
+    def list_documents(self, booking_id: UUID | str) -> tuple[DocumentRecord, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, booking_id, type, file_ref, payload, signed_by_driver_at,
+                   signed_by_host_at, signed_by_welfare_officer_at, retention_until,
+                   created_at, updated_at
+            FROM documents
+            WHERE booking_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (str(booking_id),),
+        ).fetchall()
+        return tuple(self._document_from_row(row) for row in rows)
+
+    def save_incident(self, incident: IncidentRecord) -> IncidentRecord:
+        self.connection.execute(
+            """
+            INSERT INTO incidents (
+                id, booking_id, event_id, severity, description, raised_by,
+                raised_by_type, raised_at, status, triaged_at, triaged_by,
+                resolution_notes, resolved_at, resolved_by, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                severity = excluded.severity,
+                description = excluded.description,
+                status = excluded.status,
+                triaged_at = excluded.triaged_at,
+                triaged_by = excluded.triaged_by,
+                resolution_notes = excluded.resolution_notes,
+                resolved_at = excluded.resolved_at,
+                resolved_by = excluded.resolved_by,
+                updated_at = excluded.updated_at
+            """,
+            (
+                str(incident.id),
+                str(incident.booking_id),
+                str(incident.event_id),
+                incident.severity,
+                incident.description,
+                str(incident.raised_by),
+                incident.raised_by_type.value,
+                incident.raised_at.isoformat(),
+                incident.status.value,
+                _optional_datetime_to_str(incident.triaged_at),
+                str(incident.triaged_by) if incident.triaged_by else None,
+                incident.resolution_notes,
+                _optional_datetime_to_str(incident.resolved_at),
+                str(incident.resolved_by) if incident.resolved_by else None,
+                incident.updated_at.isoformat(),
+            ),
+        )
+        self.connection.commit()
+        return incident
+
+    def get_incident(self, incident_id: UUID | str) -> IncidentRecord:
+        row = self.connection.execute(
+            """
+            SELECT id, booking_id, event_id, severity, description, raised_by,
+                   raised_by_type, raised_at, status, triaged_at, triaged_by,
+                   resolution_notes, resolved_at, resolved_by, updated_at
+            FROM incidents
+            WHERE id = ?
+            """,
+            (str(incident_id),),
+        ).fetchone()
+        if row is None:
+            raise BookingNotFoundError(f"incident {incident_id} was not found")
+        return self._incident_from_row(row)
+
+    def list_incidents(self, booking_id: UUID | str) -> tuple[IncidentRecord, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, booking_id, event_id, severity, description, raised_by,
+                   raised_by_type, raised_at, status, triaged_at, triaged_by,
+                   resolution_notes, resolved_at, resolved_by, updated_at
+            FROM incidents
+            WHERE booking_id = ?
+            ORDER BY raised_at ASC, id ASC
+            """,
+            (str(booking_id),),
+        ).fetchall()
+        return tuple(self._incident_from_row(row) for row in rows)
+
+    def save_driver(self, driver: DriverRecord) -> DriverRecord:
+        self.connection.execute(
+            """
+            INSERT INTO drivers (
+                id, full_name, phone, vehicle_details, blue_card_status,
+                blue_card_expiry, blue_card_reference, retention_tier,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                full_name = excluded.full_name,
+                phone = excluded.phone,
+                vehicle_details = excluded.vehicle_details,
+                blue_card_status = excluded.blue_card_status,
+                blue_card_expiry = excluded.blue_card_expiry,
+                blue_card_reference = excluded.blue_card_reference,
+                retention_tier = excluded.retention_tier,
+                updated_at = excluded.updated_at
+            """,
+            (
+                str(driver.id),
+                driver.full_name,
+                driver.phone,
+                json.dumps(
+                    {
+                        "make": driver.vehicle_details.make,
+                        "model": driver.vehicle_details.model,
+                        "plate": driver.vehicle_details.plate,
+                        "photo_url": driver.vehicle_details.photo_url,
+                    },
+                    sort_keys=True,
+                ),
+                driver.blue_card_status,
+                _optional_datetime_to_str(driver.blue_card_expiry),
+                driver.blue_card_reference,
+                driver.retention_tier,
+                driver.created_at.isoformat() if driver.created_at else "",
+                driver.updated_at.isoformat() if driver.updated_at else "",
+            ),
+        )
+        self.connection.commit()
+        return driver
+
+    def get_driver(self, driver_id: UUID | str) -> DriverRecord:
+        row = self.connection.execute(
+            """
+            SELECT id, full_name, phone, vehicle_details, blue_card_status,
+                   blue_card_expiry, blue_card_reference, retention_tier,
+                   created_at, updated_at
+            FROM drivers
+            WHERE id = ?
+            """,
+            (str(driver_id),),
+        ).fetchone()
+        if row is None:
+            raise BookingNotFoundError(f"driver {driver_id} was not found")
+        return self._driver_from_row(row)
+
+    def list_drivers(self) -> tuple[DriverRecord, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, full_name, phone, vehicle_details, blue_card_status,
+                   blue_card_expiry, blue_card_reference, retention_tier,
+                   created_at, updated_at
+            FROM drivers
+            ORDER BY full_name ASC, id ASC
+            """
+        ).fetchall()
+        return tuple(self._driver_from_row(row) for row in rows)
+
+    def save_driver_availability(
+        self, availability: DriverAvailability
+    ) -> DriverAvailability:
+        self.connection.execute(
+            """
+            INSERT INTO driver_availability (
+                id, driver_id, airport, starts_at, ends_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                airport = excluded.airport,
+                starts_at = excluded.starts_at,
+                ends_at = excluded.ends_at
+            """,
+            (
+                str(availability.id),
+                str(availability.driver_id),
+                availability.airport.value,
+                availability.starts_at.isoformat(),
+                availability.ends_at.isoformat(),
+                availability.created_at.isoformat() if availability.created_at else "",
+            ),
+        )
+        self.connection.commit()
+        return availability
+
+    def list_driver_availability(
+        self, driver_id: UUID | str
+    ) -> tuple[DriverAvailability, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, driver_id, airport, starts_at, ends_at, created_at
+            FROM driver_availability
+            WHERE driver_id = ?
+            ORDER BY starts_at ASC, id ASC
+            """,
+            (str(driver_id),),
+        ).fetchall()
+        return tuple(self._availability_from_row(row) for row in rows)
+
+    def driver_is_available(
+        self, driver_id: UUID | str, airport, pickup_at
+    ) -> bool:
+        return any(
+            availability.covers(airport, pickup_at)
+            for availability in self.list_driver_availability(driver_id)
+        )
+
+    def all_availability(self) -> tuple[DriverAvailability, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, driver_id, airport, starts_at, ends_at, created_at
+            FROM driver_availability
+            ORDER BY starts_at ASC, id ASC
+            """
+        ).fetchall()
+        return tuple(self._availability_from_row(row) for row in rows)
+
+    def save_ledger_entry(self, entry: LedgerEntry) -> LedgerEntry:
+        self.connection.execute(
+            """
+            INSERT INTO ledger_entries (
+                id, booking_id, event_id, entry_type, amount, currency,
+                description, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(entry.id),
+                str(entry.booking_id),
+                str(entry.event_id),
+                entry.entry_type.value,
+                str(entry.amount.amount),
+                entry.amount.currency,
+                entry.description,
+                entry.created_at.isoformat(),
+            ),
+        )
+        self.connection.commit()
+        return entry
+
+    def save_ledger_entries(
+        self, entries: Iterable[LedgerEntry]
+    ) -> tuple[LedgerEntry, ...]:
+        saved = []
+        for entry in entries:
+            saved.append(self.save_ledger_entry(entry))
+        return tuple(saved)
+
+    def list_ledger_entries(self, booking_id: UUID | str) -> tuple[LedgerEntry, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT id, booking_id, event_id, entry_type, amount, currency,
+                   description, created_at
+            FROM ledger_entries
+            WHERE booking_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (str(booking_id),),
+        ).fetchall()
+        return tuple(self._ledger_from_row(row) for row in rows)
+
+    @staticmethod
+    def _event_from_row(row: sqlite3.Row) -> Event:
+        data = dict(row)
+        data["payload"] = json.loads(data["payload"])
+        return event_from_dict(data)
+
+    @staticmethod
+    def _notification_from_row(row: sqlite3.Row) -> NotificationRecord:
+        from datetime import datetime
+
+        data = dict(row)
+        return NotificationRecord(
+            id=UUID(data["id"]),
+            event_id=UUID(data["event_id"]),
+            booking_id=UUID(data["booking_id"]),
+            recipient_type=RecipientType(data["recipient_type"]),
+            recipient_id=data["recipient_id"],
+            channel=Channel(data["channel"]),
+            template=data["template"],
+            status=NotificationStatus(data["status"]),
+            attempts=int(data["attempts"]),
+            last_error=data["last_error"],
+            created_at=datetime.fromisoformat(data["created_at"]),
+            updated_at=datetime.fromisoformat(data["updated_at"]),
+        )
+
+    @staticmethod
+    def _incident_from_row(row: sqlite3.Row) -> IncidentRecord:
+        from datetime import datetime
+
+        data = dict(row)
+        return IncidentRecord(
+            id=UUID(data["id"]),
+            booking_id=UUID(data["booking_id"]),
+            event_id=UUID(data["event_id"]),
+            severity=data["severity"],
+            description=data["description"],
+            raised_by=UUID(data["raised_by"]),
+            raised_by_type=ActorType(data["raised_by_type"]),
+            raised_at=datetime.fromisoformat(data["raised_at"]),
+            status=IncidentStatus(data["status"]),
+            triaged_at=_optional_datetime_from_str(data["triaged_at"]),
+            triaged_by=UUID(data["triaged_by"]) if data["triaged_by"] else None,
+            resolution_notes=data["resolution_notes"],
+            resolved_at=_optional_datetime_from_str(data["resolved_at"]),
+            resolved_by=UUID(data["resolved_by"]) if data["resolved_by"] else None,
+            updated_at=datetime.fromisoformat(data["updated_at"]),
+        )
+
+    @staticmethod
+    def _document_from_row(row: sqlite3.Row) -> DocumentRecord:
+        from datetime import datetime
+
+        data = dict(row)
+        return DocumentRecord(
+            id=UUID(data["id"]),
+            booking_id=UUID(data["booking_id"]),
+            type=DocumentType(data["type"]),
+            file_ref=data["file_ref"],
+            payload=json.loads(data["payload"]),
+            signed_by_driver_at=_optional_datetime_from_str(data["signed_by_driver_at"]),
+            signed_by_host_at=_optional_datetime_from_str(data["signed_by_host_at"]),
+            signed_by_welfare_officer_at=_optional_datetime_from_str(
+                data["signed_by_welfare_officer_at"]
+            ),
+            retention_until=datetime.fromisoformat(data["retention_until"]),
+            created_at=datetime.fromisoformat(data["created_at"]),
+            updated_at=datetime.fromisoformat(data["updated_at"]),
+        )
+
+    @staticmethod
+    def _driver_from_row(row: sqlite3.Row) -> DriverRecord:
+        from datetime import datetime
+        from student_shuttle.booking import VehicleSnapshot
+
+        data = dict(row)
+        vehicle = json.loads(data["vehicle_details"])
+        return DriverRecord(
+            id=UUID(data["id"]),
+            full_name=data["full_name"],
+            phone=data["phone"],
+            vehicle_details=VehicleSnapshot(
+                make=vehicle["make"],
+                model=vehicle["model"],
+                plate=vehicle["plate"],
+                photo_url=vehicle.get("photo_url"),
+            ),
+            blue_card_status=data["blue_card_status"],
+            blue_card_expiry=_optional_datetime_from_str(data["blue_card_expiry"]),
+            blue_card_reference=data["blue_card_reference"],
+            retention_tier=data["retention_tier"],
+            created_at=datetime.fromisoformat(data["created_at"]),
+            updated_at=datetime.fromisoformat(data["updated_at"]),
+        )
+
+    @staticmethod
+    def _availability_from_row(row: sqlite3.Row) -> DriverAvailability:
+        from datetime import datetime
+        from student_shuttle.booking import Airport
+
+        data = dict(row)
+        return DriverAvailability(
+            id=UUID(data["id"]),
+            driver_id=UUID(data["driver_id"]),
+            airport=Airport(data["airport"]),
+            starts_at=datetime.fromisoformat(data["starts_at"]),
+            ends_at=datetime.fromisoformat(data["ends_at"]),
+            created_at=datetime.fromisoformat(data["created_at"]),
+        )
+
+    @staticmethod
+    def _ledger_from_row(row: sqlite3.Row) -> LedgerEntry:
+        from datetime import datetime
+        from decimal import Decimal
+        from student_shuttle.booking import Money
+
+        data = dict(row)
+        return LedgerEntry(
+            id=UUID(data["id"]),
+            booking_id=UUID(data["booking_id"]),
+            event_id=UUID(data["event_id"]),
+            entry_type=LedgerEntryType(data["entry_type"]),
+            amount=Money(amount=Decimal(data["amount"]), currency=data["currency"]),
+            description=data["description"],
+            created_at=datetime.fromisoformat(data["created_at"]),
+        )
+
+
+def _optional_datetime_to_str(value) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _optional_datetime_from_str(value: str | None):
+    from datetime import datetime
+
+    return datetime.fromisoformat(value) if value else None
