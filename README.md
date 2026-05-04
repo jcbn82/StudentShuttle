@@ -91,7 +91,9 @@ Unconfigured channels fall back to recording adapters.
 Under-18 bookings must close with a persisted handover receipt. Create a receipt
 after arrival, sign it as the driver and either the host or welfare officer, then
 close the booking with `handover_receipt_id`. Receipt documents include payload
-metadata and a seven-year retention date.
+metadata, a generated local text artefact, and a seven-year retention date.
+Set `STUDENT_SHUTTLE_DOCUMENT_STORE_DIR` to control where generated receipt
+files are written; the default is `var/documents`.
 
 ## Incidents
 

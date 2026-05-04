@@ -22,6 +22,7 @@ from student_shuttle.booking import (
     SignedDocument,
     VehicleSnapshot,
 )
+from student_shuttle.document_storage import LocalDocumentStore
 from student_shuttle.documents import DocumentRecord, DocumentType
 from student_shuttle.drivers import DriverAvailability, DriverRecord
 from student_shuttle.incidents import IncidentRecord, IncidentStatus
@@ -32,8 +33,14 @@ from student_shuttle.repository import SQLiteBookingRepository
 class BookingService:
     """Coordinates domain transitions with durable booking/event persistence."""
 
-    def __init__(self, repository: SQLiteBookingRepository) -> None:
+    def __init__(
+        self,
+        repository: SQLiteBookingRepository,
+        *,
+        document_store: LocalDocumentStore | None = None,
+    ) -> None:
         self.repository = repository
+        self.document_store = document_store or LocalDocumentStore.from_env()
 
     def create_booking(self, data: dict) -> tuple[Booking, Event]:
         booking = Booking.create(
@@ -250,6 +257,8 @@ class BookingService:
             created_at=created_at,
             updated_at=created_at,
         )
+        if document.file_ref is None:
+            document.file_ref = self.document_store.save_handover_receipt(document)
         return self.repository.save_document(document)
 
     def sign_handover_receipt(self, document_id: UUID | str, data: dict) -> DocumentRecord:
@@ -265,6 +274,8 @@ class BookingService:
         else:
             raise ValueError("signer_type must be driver, host, or welfare_officer")
         document.updated_at = signed_at
+        if document.file_ref:
+            self.document_store.save_handover_receipt(document)
         return self.repository.save_document(document)
 
     def cancel_booking(

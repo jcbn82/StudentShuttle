@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from uuid import uuid4
 
 from student_shuttle.api import BookingAPIHandler
 from student_shuttle.booking import BookingState, EventType
+from student_shuttle.document_storage import LocalDocumentStore
 from student_shuttle.notification_worker import (
     NotificationWorker,
     RecordingDeliveryAdapter,
@@ -27,7 +30,9 @@ from student_shuttle.service import BookingService
 class BookingPersistenceAndAPITests(unittest.TestCase):
     def setUp(self) -> None:
         self.repository = SQLiteBookingRepository()
-        self.service = BookingService(self.repository)
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.document_store = LocalDocumentStore(Path(self.temp_dir.name))
+        self.service = BookingService(self.repository, document_store=self.document_store)
         self.notification_worker = NotificationWorker(self.repository)
         self.actor_id = str(uuid4())
         self.pickup_at = datetime(2026, 7, 1, 8, tzinfo=timezone.utc)
@@ -35,6 +40,7 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.repository.close()
+        self.temp_dir.cleanup()
 
     def test_service_persists_booking_snapshot_and_events(self) -> None:
         booking, created = self.service.create_booking(self._adult_booking_payload())
@@ -515,6 +521,10 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
         )
         expected_retention = receipt.created_at + timedelta(days=365 * 7)
         self.assertEqual(receipt.retention_until.date(), expected_retention.date())
+        self.assertIsNotNone(receipt.file_ref)
+        receipt_text = self.document_store.read_text(receipt.file_ref)
+        self.assertIn(f"Booking ID: {booking.id}", receipt_text)
+        self.assertIn("Signed by driver at: pending", receipt_text)
 
         with self.assertRaisesRegex(Exception, "stored handover_receipt_id"):
             self.service.close_booking(booking.id, {"actor_id": self.actor_id})
@@ -523,6 +533,9 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
             receipt.id,
             {"signer_type": "driver"},
         )
+        signed_receipt = self.repository.get_document(receipt.id)
+        signed_text = self.document_store.read_text(signed_receipt.file_ref)
+        self.assertNotIn("Signed by driver at: pending", signed_text)
         with self.assertRaisesRegex(Exception, "host/welfare signatures"):
             self.service.close_booking(
                 booking.id,
