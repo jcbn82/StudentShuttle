@@ -248,7 +248,7 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
-    def test_api_returns_bad_request_for_invalid_transition(self) -> None:
+    def test_api_returns_conflict_for_invalid_transition(self) -> None:
         server = self._start_test_server()
         try:
             _, created_body = self._request(
@@ -264,8 +264,66 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
                 {"actor_id": self.actor_id},
                 server.server_port,
             )
+            self.assertEqual(status, 409)
+            self.assertEqual(body["error"]["code"], "business_rule_error")
+            self.assertIn("BOOKED", body["error"]["message"])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_api_returns_structured_validation_error_for_missing_field(self) -> None:
+        server = self._start_test_server()
+        try:
+            status, body = self._request(
+                "POST",
+                "/bookings",
+                {},
+                server.server_port,
+            )
+
             self.assertEqual(status, 400)
-            self.assertIn("BOOKED", body["error"])
+            self.assertEqual(
+                body["error"],
+                {
+                    "code": "validation_error",
+                    "message": "pickup_airport is required",
+                    "field": "pickup_airport",
+                },
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_api_returns_structured_not_found_error(self) -> None:
+        server = self._start_test_server()
+        try:
+            status, body = self._request(
+                "GET",
+                f"/bookings/{uuid4()}",
+                None,
+                server.server_port,
+            )
+
+            self.assertEqual(status, 404)
+            self.assertEqual(body["error"]["code"], "not_found")
+            self.assertIn("booking", body["error"]["message"])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_api_returns_structured_validation_error_for_invalid_json(self) -> None:
+        server = self._start_test_server()
+        try:
+            status, body = self._raw_request(
+                "POST",
+                "/bookings",
+                b"{not-json",
+                server.server_port,
+            )
+
+            self.assertEqual(status, 400)
+            self.assertEqual(body["error"]["code"], "validation_error")
+            self.assertEqual(body["error"]["message"], "request body must be valid JSON")
         finally:
             server.shutdown()
             server.server_close()
@@ -650,6 +708,27 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
             encoded = json.dumps(body).encode("utf-8") if body is not None else None
             headers = {"Content-Type": "application/json"} if body is not None else {}
             connection.request(method, path, body=encoded, headers=headers)
+            response = connection.getresponse()
+            data = json.loads(response.read().decode("utf-8"))
+            return response.status, data
+        finally:
+            connection.close()
+
+    def _raw_request(
+        self,
+        method: str,
+        path: str,
+        body: bytes,
+        port: int,
+    ) -> tuple[int, dict]:
+        connection = HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            connection.request(
+                method,
+                path,
+                body=body,
+                headers={"Content-Type": "application/json"},
+            )
             response = connection.getresponse()
             data = json.loads(response.read().decode("utf-8"))
             return response.status, data

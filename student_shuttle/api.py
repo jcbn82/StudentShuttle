@@ -28,6 +28,24 @@ from student_shuttle.serialization import (
 from student_shuttle.service import BookingService
 
 
+class APIError(Exception):
+    """Structured API error that maps cleanly to a JSON response."""
+
+    def __init__(
+        self,
+        status: HTTPStatus,
+        code: str,
+        message: str,
+        *,
+        field: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.code = code
+        self.message = message
+        self.field = field
+
+
 class BookingAPIHandler(BaseHTTPRequestHandler):
     """HTTP handler that dispatches booking lifecycle actions."""
 
@@ -101,21 +119,38 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
                     {"drivers": [driver_to_dict(driver) for driver in drivers]},
                 )
                 return
-            self._write_json(HTTPStatus.NOT_FOUND, {"error": "route not found"})
-        except BookingNotFoundError as exc:
-            self._write_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
-        except ValueError as exc:
-            self._write_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            raise APIError(HTTPStatus.NOT_FOUND, "not_found", "route not found")
+        except Exception as exc:
+            self._write_exception(exc)
 
     def do_POST(self) -> None:
         try:
             if self.path == "/bookings":
                 payload = self._read_json()
+                _require_fields(
+                    payload,
+                    [
+                        "pickup_airport",
+                        "pickup_flight_number",
+                        "pickup_scheduled_arrival",
+                        "destination",
+                        "student_id",
+                        "is_under_18",
+                        "booker_id",
+                        "booker_type",
+                        "fare_amount",
+                        "fare_components",
+                        "payment_status",
+                        "agent_commission_amount",
+                        "actor_id",
+                    ],
+                )
                 booking, event = self.service.create_booking(payload)
                 self._write_transition(HTTPStatus.CREATED, booking, event)
                 return
             if self.path == "/drivers":
                 payload = self._read_json()
+                _require_fields(payload, ["full_name", "phone", "vehicle_details"])
                 driver = self.service.create_driver(payload)
                 self._write_json(HTTPStatus.CREATED, {"driver": driver_to_dict(driver)})
                 return
@@ -218,8 +253,7 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
             }
             action = actions.get(suffix)
             if action is None:
-                self._write_json(HTTPStatus.NOT_FOUND, {"error": "route not found"})
-                return
+                raise APIError(HTTPStatus.NOT_FOUND, "not_found", "route not found")
 
             payload = self._read_json()
             result = action(booking_id, payload)
@@ -236,10 +270,8 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
                 return
             booking, event = result
             self._write_transition(HTTPStatus.OK, booking, event)
-        except BookingNotFoundError as exc:
-            self._write_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
-        except (BookingRuleError, KeyError, ValueError, json.JSONDecodeError) as exc:
-            self._write_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+        except Exception as exc:
+            self._write_exception(exc)
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -247,7 +279,11 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
     def _parse_booking_route(self) -> tuple[str, str]:
         parts = self.path.split("?")[0].strip("/").split("/")
         if len(parts) < 2 or parts[0] != "bookings":
-            raise ValueError("expected /bookings/{booking_id}")
+            raise APIError(
+                HTTPStatus.NOT_FOUND,
+                "not_found",
+                "route not found",
+            )
         booking_id = parts[1]
         suffix = "" if len(parts) == 2 else "/" + "/".join(parts[2:])
         return booking_id, suffix
@@ -257,9 +293,20 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
         raw_body = self.rfile.read(content_length).decode("utf-8")
         if not raw_body:
             return {}
-        data = json.loads(raw_body)
+        try:
+            data = json.loads(raw_body)
+        except json.JSONDecodeError as exc:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "validation_error",
+                "request body must be valid JSON",
+            ) from exc
         if not isinstance(data, dict):
-            raise ValueError("request body must be a JSON object")
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "validation_error",
+                "request body must be a JSON object",
+            )
         return data
 
     def _write_transition(self, status: HTTPStatus, booking: Any, event: Any) -> None:
@@ -278,6 +325,58 @@ class BookingAPIHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def _write_exception(self, exc: Exception) -> None:
+        if isinstance(exc, APIError):
+            self._write_error(exc.status, exc.code, exc.message, field=exc.field)
+            return
+        if isinstance(exc, BookingNotFoundError):
+            self._write_error(HTTPStatus.NOT_FOUND, "not_found", str(exc))
+            return
+        if isinstance(exc, BookingRuleError):
+            self._write_error(HTTPStatus.CONFLICT, "business_rule_error", str(exc))
+            return
+        if isinstance(exc, KeyError):
+            field = str(exc).strip("'")
+            self._write_error(
+                HTTPStatus.BAD_REQUEST,
+                "validation_error",
+                f"{field} is required",
+                field=field,
+            )
+            return
+        if isinstance(exc, ValueError):
+            self._write_error(HTTPStatus.BAD_REQUEST, "validation_error", str(exc))
+            return
+        self._write_error(
+            HTTPStatus.INTERNAL_SERVER_ERROR,
+            "internal_error",
+            "unexpected server error",
+        )
+
+    def _write_error(
+        self,
+        status: HTTPStatus,
+        code: str,
+        message: str,
+        *,
+        field: str | None = None,
+    ) -> None:
+        error: dict[str, Any] = {"code": code, "message": message}
+        if field is not None:
+            error["field"] = field
+        self._write_json(status, {"error": error})
+
+
+def _require_fields(payload: dict[str, Any], fields: list[str]) -> None:
+    for field in fields:
+        if field not in payload:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "validation_error",
+                f"{field} is required",
+                field=field,
+            )
 
 
 def create_server(

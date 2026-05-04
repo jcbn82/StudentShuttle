@@ -104,3 +104,20 @@ SQLite schema is managed by versioned migrations in `student_shuttle.migrations`
 `SQLiteBookingRepository` applies unapplied migrations on initialization and
 records them in `schema_migrations`, so running repository setup repeatedly is
 idempotent.
+
+## API errors
+
+Error responses use a consistent envelope:
+
+```json
+{
+  "error": {
+    "code": "validation_error",
+    "message": "pickup_airport is required",
+    "field": "pickup_airport"
+  }
+}
+```
+
+Validation errors return `400`, missing resources return `404`, and valid
+requests that violate booking business rules return `409`.
