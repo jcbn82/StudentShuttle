@@ -1,0 +1,1062 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Student Shuttle Booking API",
+    "version": "0.1.0",
+    "description": "Dependency-free JSON API for booking state transitions, operational workflows, and audit data."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8000"
+    }
+  ],
+  "paths": {
+    "/bookings": {
+      "post": {
+        "summary": "Create a booking",
+        "tags": ["Bookings"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateBookingRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": { "$ref": "#/components/responses/BookingTransition" },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "409": { "$ref": "#/components/responses/BusinessRuleError" }
+        }
+      }
+    },
+    "/bookings/{booking_id}": {
+      "get": {
+        "summary": "Fetch a booking",
+        "tags": ["Bookings"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "responses": {
+          "200": {
+            "description": "Booking response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["booking"],
+                  "properties": { "booking": { "$ref": "#/components/schemas/Booking" } }
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    },
+    "/bookings/{booking_id}/events": {
+      "get": {
+        "summary": "List booking events",
+        "tags": ["Events"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "responses": {
+          "200": {
+            "description": "Booking events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["events"],
+                  "properties": {
+                    "events": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Event" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    },
+    "/bookings/{booking_id}/notifications": {
+      "get": {
+        "summary": "List planned notifications for a booking",
+        "tags": ["Notifications"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "responses": {
+          "200": {
+            "description": "Notifications",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["notifications"],
+                  "properties": {
+                    "notifications": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Notification" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    },
+    "/bookings/{booking_id}/documents": {
+      "get": {
+        "summary": "List booking documents",
+        "tags": ["Documents"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "responses": {
+          "200": {
+            "description": "Documents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["documents"],
+                  "properties": {
+                    "documents": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Document" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    },
+    "/bookings/{booking_id}/incidents": {
+      "get": {
+        "summary": "List booking incidents",
+        "tags": ["Incidents"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "responses": {
+          "200": {
+            "description": "Incidents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["incidents"],
+                  "properties": {
+                    "incidents": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Incident" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      },
+      "post": {
+        "summary": "Raise an incident without changing booking state",
+        "tags": ["Incidents"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RaiseIncidentRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Incident raised",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["booking", "event", "incident"],
+                  "properties": {
+                    "booking": { "$ref": "#/components/schemas/Booking" },
+                    "event": { "$ref": "#/components/schemas/Event" },
+                    "incident": { "$ref": "#/components/schemas/Incident" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "404": { "$ref": "#/components/responses/NotFoundError" },
+          "409": { "$ref": "#/components/responses/BusinessRuleError" }
+        }
+      }
+    },
+    "/bookings/{booking_id}/ledger": {
+      "get": {
+        "summary": "List booking payment ledger entries",
+        "tags": ["Ledger"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "responses": {
+          "200": {
+            "description": "Ledger entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ledger"],
+                  "properties": {
+                    "ledger": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/LedgerEntry" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    },
+    "/bookings/{booking_id}/eligible-drivers": {
+      "get": {
+        "summary": "List eligible drivers for a booking",
+        "tags": ["Drivers"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "responses": {
+          "200": {
+            "description": "Eligible drivers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["drivers"],
+                  "properties": {
+                    "drivers": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Driver" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    },
+    "/bookings/{booking_id}/assign-driver": {
+      "post": {
+        "summary": "Assign a driver to a booking",
+        "tags": ["Bookings", "Drivers"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AssignDriverRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/BookingTransition" },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "404": { "$ref": "#/components/responses/NotFoundError" },
+          "409": { "$ref": "#/components/responses/BusinessRuleError" }
+        }
+      }
+    },
+    "/bookings/{booking_id}/flight-update": {
+      "post": {
+        "summary": "Record an updated actual flight arrival time",
+        "tags": ["Bookings"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/FlightUpdateRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/BookingTransition" },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    },
+    "/bookings/{booking_id}/mark-met": {
+      "post": {
+        "summary": "Mark that the driver has met the student",
+        "tags": ["Bookings"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MarkMetRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/BookingTransition" },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "404": { "$ref": "#/components/responses/NotFoundError" },
+          "409": { "$ref": "#/components/responses/BusinessRuleError" }
+        }
+      }
+    },
+    "/bookings/{booking_id}/mark-arrived": {
+      "post": {
+        "summary": "Mark that the driver has arrived at destination",
+        "tags": ["Bookings"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ActorRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/BookingTransition" },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "404": { "$ref": "#/components/responses/NotFoundError" },
+          "409": { "$ref": "#/components/responses/BusinessRuleError" }
+        }
+      }
+    },
+    "/bookings/{booking_id}/close": {
+      "post": {
+        "summary": "Close a booking",
+        "tags": ["Bookings"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CloseBookingRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/BookingTransition" },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "404": { "$ref": "#/components/responses/NotFoundError" },
+          "409": { "$ref": "#/components/responses/BusinessRuleError" }
+        }
+      }
+    },
+    "/bookings/{booking_id}/cancel": {
+      "post": {
+        "summary": "Cancel a booking and apply cancellation ledger policy",
+        "tags": ["Bookings", "Ledger"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CancelBookingRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Cancellation response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["booking", "event", "ledger"],
+                  "properties": {
+                    "booking": { "$ref": "#/components/schemas/Booking" },
+                    "event": { "$ref": "#/components/schemas/Event" },
+                    "ledger": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/LedgerEntry" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "404": { "$ref": "#/components/responses/NotFoundError" },
+          "409": { "$ref": "#/components/responses/BusinessRuleError" }
+        }
+      }
+    },
+    "/bookings/{booking_id}/notifications/plan": {
+      "post": {
+        "summary": "Plan idempotent notification records for booking events",
+        "tags": ["Notifications"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "responses": {
+          "200": {
+            "description": "Planned notifications",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["notifications"],
+                  "properties": {
+                    "notifications": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Notification" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    },
+    "/bookings/{booking_id}/handover-receipts": {
+      "post": {
+        "summary": "Create an under-18 handover receipt document",
+        "tags": ["Documents"],
+        "parameters": [{ "$ref": "#/components/parameters/BookingId" }],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateHandoverReceiptRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Document created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["document"],
+                  "properties": { "document": { "$ref": "#/components/schemas/Document" } }
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFoundError" },
+          "409": { "$ref": "#/components/responses/BusinessRuleError" }
+        }
+      }
+    },
+    "/notifications/deliver-pending": {
+      "post": {
+        "summary": "Deliver all pending or failed notification records",
+        "tags": ["Notifications"],
+        "responses": {
+          "200": {
+            "description": "Delivery attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["notifications"],
+                  "properties": {
+                    "notifications": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Notification" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/notifications/{notification_id}/retry": {
+      "post": {
+        "summary": "Retry a failed notification",
+        "tags": ["Notifications"],
+        "parameters": [{ "$ref": "#/components/parameters/NotificationId" }],
+        "responses": {
+          "200": {
+            "description": "Notification retry result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["notification"],
+                  "properties": { "notification": { "$ref": "#/components/schemas/Notification" } }
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    },
+    "/documents/{document_id}/sign": {
+      "post": {
+        "summary": "Sign a handover receipt document",
+        "tags": ["Documents"],
+        "parameters": [{ "$ref": "#/components/parameters/DocumentId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SignDocumentRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["document"],
+                  "properties": { "document": { "$ref": "#/components/schemas/Document" } }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    },
+    "/incidents/{incident_id}/triage": {
+      "post": {
+        "summary": "Mark an incident triaged",
+        "tags": ["Incidents"],
+        "parameters": [{ "$ref": "#/components/parameters/IncidentId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ActorRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Triaged incident",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["incident"],
+                  "properties": { "incident": { "$ref": "#/components/schemas/Incident" } }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    },
+    "/incidents/{incident_id}/resolve": {
+      "post": {
+        "summary": "Resolve an incident",
+        "tags": ["Incidents"],
+        "parameters": [{ "$ref": "#/components/parameters/IncidentId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ResolveIncidentRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resolved incident",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["incident"],
+                  "properties": { "incident": { "$ref": "#/components/schemas/Incident" } }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    },
+    "/drivers": {
+      "post": {
+        "summary": "Create or update a driver profile",
+        "tags": ["Drivers"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateDriverRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Driver created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["driver"],
+                  "properties": { "driver": { "$ref": "#/components/schemas/Driver" } }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" }
+        }
+      }
+    },
+    "/drivers/{driver_id}": {
+      "get": {
+        "summary": "Fetch a driver profile",
+        "tags": ["Drivers"],
+        "parameters": [{ "$ref": "#/components/parameters/DriverId" }],
+        "responses": {
+          "200": {
+            "description": "Driver",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["driver"],
+                  "properties": { "driver": { "$ref": "#/components/schemas/Driver" } }
+                }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    },
+    "/drivers/{driver_id}/availability": {
+      "post": {
+        "summary": "Create a driver availability window",
+        "tags": ["Drivers"],
+        "parameters": [{ "$ref": "#/components/parameters/DriverId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateAvailabilityRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Availability created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["availability"],
+                  "properties": { "availability": { "$ref": "#/components/schemas/DriverAvailability" } }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/ValidationError" },
+          "404": { "$ref": "#/components/responses/NotFoundError" }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "BookingId": {
+        "name": "booking_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "NotificationId": {
+        "name": "notification_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "DocumentId": {
+        "name": "document_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "IncidentId": {
+        "name": "incident_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      },
+      "DriverId": {
+        "name": "driver_id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "format": "uuid" }
+      }
+    },
+    "responses": {
+      "BookingTransition": {
+        "description": "Booking plus event",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": ["booking", "event"],
+              "properties": {
+                "booking": { "$ref": "#/components/schemas/Booking" },
+                "event": { "$ref": "#/components/schemas/Event" }
+              }
+            }
+          }
+        }
+      },
+      "ValidationError": {
+        "description": "Validation error",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/APIErrorResponse" }
+          }
+        }
+      },
+      "NotFoundError": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/APIErrorResponse" }
+          }
+        }
+      },
+      "BusinessRuleError": {
+        "description": "Business rule conflict",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/APIErrorResponse" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "APIErrorResponse": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": { "type": "string", "enum": ["validation_error", "not_found", "business_rule_error", "internal_error"] },
+              "message": { "type": "string" },
+              "field": { "type": "string" }
+            }
+          }
+        }
+      },
+      "Money": {
+        "type": "object",
+        "required": ["amount", "currency"],
+        "properties": {
+          "amount": { "type": "string" },
+          "currency": { "type": "string", "default": "AUD" }
+        }
+      },
+      "Address": {
+        "type": "object",
+        "required": ["line1", "suburb", "postcode", "state"],
+        "properties": {
+          "line1": { "type": "string" },
+          "line2": { "type": ["string", "null"] },
+          "suburb": { "type": "string" },
+          "postcode": { "type": "string" },
+          "state": { "type": "string" }
+        }
+      },
+      "Vehicle": {
+        "type": "object",
+        "required": ["make", "model", "plate"],
+        "properties": {
+          "make": { "type": "string" },
+          "model": { "type": "string" },
+          "plate": { "type": "string" },
+          "photo_url": { "type": ["string", "null"] }
+        }
+      },
+      "Booking": {
+        "type": "object",
+        "required": ["id", "state", "pickup_airport", "pickup_flight_number", "pickup_scheduled_arrival", "destination", "student_id", "is_under_18", "booker_id", "booker_type", "fare_amount", "payment_status"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "state": { "type": "string", "enum": ["BOOKED", "ASSIGNED", "MET", "ARRIVED", "CLOSED", "CANCELLED"] },
+          "pickup_airport": { "type": "string", "enum": ["BNE", "OOL", "SYD", "MEL", "ADL", "PER"] },
+          "pickup_flight_number": { "type": "string" },
+          "pickup_scheduled_arrival": { "type": "string", "format": "date-time" },
+          "pickup_actual_arrival": { "type": ["string", "null"], "format": "date-time" },
+          "destination": { "$ref": "#/components/schemas/Address" },
+          "student_id": { "type": "string", "format": "uuid" },
+          "is_under_18": { "type": "boolean" },
+          "booker_id": { "type": "string", "format": "uuid" },
+          "booker_type": { "type": "string", "enum": ["INSTITUTION", "AGENT", "PARENT", "STUDENT_SELF"] },
+          "institution_id": { "type": ["string", "null"], "format": "uuid" },
+          "agent_id": { "type": ["string", "null"], "format": "uuid" },
+          "homestay_host_id": { "type": ["string", "null"], "format": "uuid" },
+          "driver_id": { "type": ["string", "null"], "format": "uuid" },
+          "vehicle_snapshot": { "anyOf": [{ "$ref": "#/components/schemas/Vehicle" }, { "type": "null" }] },
+          "assignment_at": { "type": ["string", "null"], "format": "date-time" },
+          "met_at": { "type": ["string", "null"], "format": "date-time" },
+          "arrived_at": { "type": ["string", "null"], "format": "date-time" },
+          "closed_at": { "type": ["string", "null"], "format": "date-time" },
+          "cancellation_at": { "type": ["string", "null"], "format": "date-time" },
+          "handover_receipt_id": { "type": ["string", "null"], "format": "uuid" },
+          "fare_amount": { "$ref": "#/components/schemas/Money" },
+          "payment_status": { "type": "string", "enum": ["UNPAID", "PAID", "REFUNDED", "PARTIAL_REFUND"] }
+        }
+      },
+      "Event": {
+        "type": "object",
+        "required": ["id", "booking_id", "event_type", "actor_id", "actor_type", "timestamp", "payload"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "booking_id": { "type": "string", "format": "uuid" },
+          "event_type": { "type": "string" },
+          "actor_id": { "type": "string", "format": "uuid" },
+          "actor_type": { "type": "string", "enum": ["DRIVER", "OPS", "SYSTEM", "BUYER", "HOST"] },
+          "timestamp": { "type": "string", "format": "date-time" },
+          "payload": { "type": "object" }
+        }
+      },
+      "Notification": {
+        "type": "object",
+        "required": ["id", "event_id", "booking_id", "recipient_type", "recipient_id", "channel", "template", "status", "attempts"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "event_id": { "type": "string", "format": "uuid" },
+          "booking_id": { "type": "string", "format": "uuid" },
+          "recipient_type": { "type": "string" },
+          "recipient_id": { "type": "string" },
+          "channel": { "type": "string", "enum": ["sms", "whatsapp", "email", "email_digest", "slack"] },
+          "template": { "type": "string" },
+          "status": { "type": "string", "enum": ["pending", "sent", "failed"] },
+          "attempts": { "type": "integer" },
+          "last_error": { "type": ["string", "null"] }
+        }
+      },
+      "Document": {
+        "type": "object",
+        "required": ["id", "booking_id", "type", "payload", "retention_until", "created_at", "is_fully_signed"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "booking_id": { "type": "string", "format": "uuid" },
+          "type": { "type": "string", "enum": ["handover_receipt"] },
+          "file_ref": { "type": ["string", "null"] },
+          "payload": { "type": "object" },
+          "signed_by_driver_at": { "type": ["string", "null"], "format": "date-time" },
+          "signed_by_host_at": { "type": ["string", "null"], "format": "date-time" },
+          "signed_by_welfare_officer_at": { "type": ["string", "null"], "format": "date-time" },
+          "retention_until": { "type": "string", "format": "date-time" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": ["string", "null"], "format": "date-time" },
+          "is_fully_signed": { "type": "boolean" }
+        }
+      },
+      "Incident": {
+        "type": "object",
+        "required": ["id", "booking_id", "event_id", "severity", "description", "raised_by", "raised_by_type", "raised_at", "status"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "booking_id": { "type": "string", "format": "uuid" },
+          "event_id": { "type": "string", "format": "uuid" },
+          "severity": { "type": "string" },
+          "description": { "type": "string" },
+          "raised_by": { "type": "string", "format": "uuid" },
+          "raised_by_type": { "type": "string" },
+          "raised_at": { "type": "string", "format": "date-time" },
+          "status": { "type": "string", "enum": ["open", "triaged", "resolved"] },
+          "triaged_by": { "type": ["string", "null"], "format": "uuid" },
+          "triaged_at": { "type": ["string", "null"], "format": "date-time" },
+          "resolution_notes": { "type": ["string", "null"] },
+          "resolved_by": { "type": ["string", "null"], "format": "uuid" },
+          "resolved_at": { "type": ["string", "null"], "format": "date-time" }
+        }
+      },
+      "Driver": {
+        "type": "object",
+        "required": ["id", "full_name", "phone", "vehicle_details"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "full_name": { "type": "string" },
+          "phone": { "type": "string" },
+          "vehicle_details": { "$ref": "#/components/schemas/Vehicle" },
+          "blue_card_status": { "type": ["string", "null"] },
+          "blue_card_expiry": { "type": ["string", "null"], "format": "date-time" },
+          "blue_card_reference": { "type": ["string", "null"] },
+          "retention_tier": { "type": ["string", "null"] },
+          "created_at": { "type": ["string", "null"], "format": "date-time" },
+          "updated_at": { "type": ["string", "null"], "format": "date-time" }
+        }
+      },
+      "DriverAvailability": {
+        "type": "object",
+        "required": ["id", "driver_id", "airport", "starts_at", "ends_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "driver_id": { "type": "string", "format": "uuid" },
+          "airport": { "type": "string", "enum": ["BNE", "OOL", "SYD", "MEL", "ADL", "PER"] },
+          "starts_at": { "type": "string", "format": "date-time" },
+          "ends_at": { "type": "string", "format": "date-time" },
+          "created_at": { "type": ["string", "null"], "format": "date-time" }
+        }
+      },
+      "LedgerEntry": {
+        "type": "object",
+        "required": ["id", "booking_id", "event_id", "entry_type", "amount", "description", "created_at"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "booking_id": { "type": "string", "format": "uuid" },
+          "event_id": { "type": "string", "format": "uuid" },
+          "entry_type": { "type": "string", "enum": ["fare_charged", "refund", "driver_cancellation_fee", "driver_payment", "agent_commission"] },
+          "amount": { "$ref": "#/components/schemas/Money" },
+          "description": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ActorRequest": {
+        "type": "object",
+        "required": ["actor_id"],
+        "properties": {
+          "actor_id": { "type": "string", "format": "uuid" },
+          "actor_type": { "type": "string" }
+        }
+      },
+      "CreateBookingRequest": {
+        "type": "object",
+        "required": ["pickup_airport", "pickup_flight_number", "pickup_scheduled_arrival", "destination", "student_id", "is_under_18", "booker_id", "booker_type", "fare_amount", "fare_components", "payment_status", "agent_commission_amount", "actor_id"],
+        "properties": {
+          "pickup_airport": { "type": "string" },
+          "pickup_flight_number": { "type": "string" },
+          "pickup_scheduled_arrival": { "type": "string", "format": "date-time" },
+          "destination": { "$ref": "#/components/schemas/Address" },
+          "student_id": { "type": "string", "format": "uuid" },
+          "is_under_18": { "type": "boolean" },
+          "booker_id": { "type": "string", "format": "uuid" },
+          "booker_type": { "type": "string" },
+          "fare_amount": { "$ref": "#/components/schemas/Money" },
+          "fare_components": { "type": "object" },
+          "payment_status": { "type": "string" },
+          "agent_commission_amount": { "$ref": "#/components/schemas/Money" },
+          "actor_id": { "type": "string", "format": "uuid" }
+        }
+      },
+      "AssignDriverRequest": {
+        "type": "object",
+        "required": ["actor_id"],
+        "properties": {
+          "actor_id": { "type": "string", "format": "uuid" },
+          "driver_id": { "type": "string", "format": "uuid" },
+          "driver": { "$ref": "#/components/schemas/CreateDriverRequest" }
+        }
+      },
+      "FlightUpdateRequest": {
+        "type": "object",
+        "required": ["actor_id", "actual_arrival"],
+        "properties": {
+          "actor_id": { "type": "string", "format": "uuid" },
+          "actual_arrival": { "type": "string", "format": "date-time" }
+        }
+      },
+      "MarkMetRequest": {
+        "type": "object",
+        "required": ["actor_id"],
+        "properties": {
+          "actor_id": { "type": "string", "format": "uuid" },
+          "override_flight_check": { "type": "boolean" },
+          "check_in_photo_url": { "type": ["string", "null"] }
+        }
+      },
+      "CloseBookingRequest": {
+        "type": "object",
+        "required": ["actor_id"],
+        "properties": {
+          "actor_id": { "type": "string", "format": "uuid" },
+          "handover_receipt_id": { "type": "string", "format": "uuid" },
+          "grace_period_elapsed": { "type": "boolean" },
+          "driver_payment_amount": { "$ref": "#/components/schemas/Money" }
+        }
+      },
+      "CancelBookingRequest": {
+        "type": "object",
+        "required": ["actor_id", "reason"],
+        "properties": {
+          "actor_id": { "type": "string", "format": "uuid" },
+          "actor_type": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      },
+      "RaiseIncidentRequest": {
+        "type": "object",
+        "required": ["actor_id", "actor_type", "severity", "description"],
+        "properties": {
+          "actor_id": { "type": "string", "format": "uuid" },
+          "actor_type": { "type": "string" },
+          "severity": { "type": "string" },
+          "description": { "type": "string" }
+        }
+      },
+      "ResolveIncidentRequest": {
+        "type": "object",
+        "required": ["actor_id", "resolution_notes"],
+        "properties": {
+          "actor_id": { "type": "string", "format": "uuid" },
+          "resolution_notes": { "type": "string" }
+        }
+      },
+      "CreateHandoverReceiptRequest": {
+        "type": "object",
+        "properties": {
+          "handover_to": { "type": ["string", "null"] },
+          "file_ref": { "type": ["string", "null"] }
+        }
+      },
+      "SignDocumentRequest": {
+        "type": "object",
+        "required": ["signer_type"],
+        "properties": {
+          "signer_type": { "type": "string", "enum": ["driver", "host", "welfare_officer"] },
+          "signed_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CreateDriverRequest": {
+        "type": "object",
+        "required": ["full_name", "phone", "vehicle_details"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "full_name": { "type": "string" },
+          "phone": { "type": "string" },
+          "vehicle_details": { "$ref": "#/components/schemas/Vehicle" },
+          "blue_card_status": { "type": ["string", "null"] },
+          "blue_card_expiry": { "type": ["string", "null"], "format": "date-time" },
+          "blue_card_reference": { "type": ["string", "null"] },
+          "retention_tier": { "type": ["string", "null"] }
+        }
+      },
+      "CreateAvailabilityRequest": {
+        "type": "object",
+        "required": ["airport", "starts_at", "ends_at"],
+        "properties": {
+          "airport": { "type": "string" },
+          "starts_at": { "type": "string", "format": "date-time" },
+          "ends_at": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  }
+}

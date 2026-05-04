@@ -121,3 +121,8 @@ Error responses use a consistent envelope:
 
 Validation errors return `400`, missing resources return `404`, and valid
 requests that violate booking business rules return `409`.
+
+## OpenAPI
+
+The current HTTP contract is documented in `docs/openapi.json`. It is JSON
+rather than YAML so tests can parse it with the Python standard library.
