@@ -6,11 +6,18 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from http.client import HTTPConnection
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from uuid import uuid4
 
 from student_shuttle.api import BookingAPIHandler
 from student_shuttle.booking import BookingState, EventType
-from student_shuttle.notification_worker import NotificationWorker, RecordingDeliveryAdapter
+from student_shuttle.notification_worker import (
+    NotificationWorker,
+    RecordingDeliveryAdapter,
+    SMTPDeliveryAdapter,
+    WebhookDeliveryAdapter,
+    create_notification_worker_from_env,
+)
 from student_shuttle.notifications import Channel, NotificationStatus, RecipientType
 from student_shuttle.payments import LedgerEntryType
 from student_shuttle.repository import SQLiteBookingRepository
@@ -88,6 +95,64 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
         second_attempt = worker.retry(str(student_sms.id))
         self.assertEqual(second_attempt.status, NotificationStatus.SENT)
         self.assertEqual(second_attempt.attempts, 2)
+
+    def test_notification_worker_factory_configures_provider_adapters(self) -> None:
+        worker = create_notification_worker_from_env(
+            self.repository,
+            environ={
+                "STUDENT_SHUTTLE_SMTP_HOST": "smtp.example.test",
+                "STUDENT_SHUTTLE_SMTP_FROM": "ops@example.test",
+                "STUDENT_SHUTTLE_SMTP_PORT": "2525",
+                "STUDENT_SHUTTLE_SMTP_TLS": "false",
+                "STUDENT_SHUTTLE_SMS_WEBHOOK_URL": "http://provider.example.test/sms",
+                "STUDENT_SHUTTLE_SMS_WEBHOOK_TOKEN": "secret",
+            },
+        )
+
+        self.assertIsInstance(worker.adapters[Channel.EMAIL], SMTPDeliveryAdapter)
+        self.assertIs(worker.adapters[Channel.EMAIL], worker.adapters[Channel.EMAIL_DIGEST])
+        self.assertIsInstance(worker.adapters[Channel.SMS], WebhookDeliveryAdapter)
+        self.assertIsInstance(worker.adapters[Channel.WHATSAPP], RecordingDeliveryAdapter)
+
+    def test_webhook_delivery_adapter_posts_notification_payload(self) -> None:
+        received: list[dict] = []
+
+        class TestWebhookHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                content_length = int(self.headers.get("Content-Length", "0"))
+                raw_body = self.rfile.read(content_length).decode("utf-8")
+                received.append(
+                    {
+                        "authorization": self.headers.get("Authorization"),
+                        "body": json.loads(raw_body),
+                    }
+                )
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), TestWebhookHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            booking, _ = self.service.create_booking(self._adult_booking_payload())
+            notification = self.notification_worker.plan_for_booking(str(booking.id))[0]
+            adapter = WebhookDeliveryAdapter(
+                channel=Channel.SMS,
+                url=f"http://127.0.0.1:{server.server_port}/webhook",
+                bearer_token="token",
+            )
+
+            adapter.send(notification)
+
+            self.assertEqual(received[0]["authorization"], "Bearer token")
+            self.assertEqual(received[0]["body"]["id"], str(notification.id))
+            self.assertEqual(received[0]["body"]["template"], notification.template)
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_eligible_drivers_filter_availability_and_blue_card(self) -> None:
         booking, _ = self.service.create_booking(self._under_18_booking_payload())

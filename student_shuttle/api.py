@@ -13,7 +13,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
 from student_shuttle.booking import ActorType, BookingRuleError
-from student_shuttle.notification_worker import NotificationWorker
+from student_shuttle.notification_worker import (
+    NotificationWorker,
+    create_notification_worker_from_env,
+)
 from student_shuttle.repository import BookingNotFoundError, SQLiteBookingRepository
 from student_shuttle.serialization import (
     availability_to_dict,
@@ -442,7 +445,7 @@ def create_server(
 ) -> ThreadingHTTPServer:
     repository = SQLiteBookingRepository(database_path)
     service = BookingService(repository)
-    notification_worker = NotificationWorker(repository)
+    notification_worker = create_notification_worker_from_env(repository)
 
     class ConfiguredBookingAPIHandler(BookingAPIHandler):
         pass

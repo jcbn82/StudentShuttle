@@ -69,6 +69,23 @@ The local notification worker uses recording adapters for email, email digest,
 SMS, WhatsApp, and Slack. These adapters make delivery state testable without
 external providers; production adapters can implement the same `send` method.
 
+Provider adapters can be configured with environment variables:
+
+- `STUDENT_SHUTTLE_SMTP_HOST`
+- `STUDENT_SHUTTLE_SMTP_PORT`
+- `STUDENT_SHUTTLE_SMTP_FROM`
+- `STUDENT_SHUTTLE_SMTP_USERNAME`
+- `STUDENT_SHUTTLE_SMTP_PASSWORD`
+- `STUDENT_SHUTTLE_SMTP_TLS`
+- `STUDENT_SHUTTLE_SMS_WEBHOOK_URL`
+- `STUDENT_SHUTTLE_SMS_WEBHOOK_TOKEN`
+- `STUDENT_SHUTTLE_WHATSAPP_WEBHOOK_URL`
+- `STUDENT_SHUTTLE_WHATSAPP_WEBHOOK_TOKEN`
+- `STUDENT_SHUTTLE_SLACK_WEBHOOK_URL`
+- `STUDENT_SHUTTLE_SLACK_WEBHOOK_TOKEN`
+
+Unconfigured channels fall back to recording adapters.
+
 ## Under-18 handover receipts
 
 Under-18 bookings must close with a persisted handover receipt. Create a receipt
