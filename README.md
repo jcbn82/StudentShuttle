@@ -119,8 +119,17 @@ Error responses use a consistent envelope:
 }
 ```
 
-Validation errors return `400`, missing resources return `404`, and valid
-requests that violate booking business rules return `409`.
+Validation errors return `400`, forbidden actor roles return `403`, missing
+resources return `404`, and valid requests that violate booking business rules
+return `409`.
+
+## Authorization
+
+Write endpoints use the request `actor_type` field for lightweight role checks.
+For example, ops-only actions such as driver assignment reject buyer actors, and
+driver actions such as `mark-met` accept driver or ops actors. If `actor_type` is
+omitted, endpoints use the same default actor type as the underlying domain
+service.
 
 ## OpenAPI
 

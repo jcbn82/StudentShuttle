@@ -744,6 +744,14 @@
             "schema": { "$ref": "#/components/schemas/APIErrorResponse" }
           }
         }
+      },
+      "ForbiddenError": {
+        "description": "Forbidden",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/APIErrorResponse" }
+          }
+        }
       }
     },
     "schemas": {
@@ -751,7 +759,7 @@
         "type": "object",
         "required": ["code", "message"],
         "properties": {
-          "code": { "type": "string", "enum": ["validation_error", "not_found", "business_rule_error", "internal_error"] },
+          "code": { "type": "string", "enum": ["validation_error", "not_found", "forbidden", "business_rule_error", "internal_error"] },
           "message": { "type": "string" },
           "field": { "type": "string" }
         }

@@ -328,6 +328,63 @@ class BookingPersistenceAndAPITests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_api_returns_forbidden_for_disallowed_actor_type(self) -> None:
+        server = self._start_test_server()
+        try:
+            _, created_body = self._request(
+                "POST",
+                "/bookings",
+                self._adult_booking_payload(),
+                server.server_port,
+            )
+            booking_id = created_body["booking"]["id"]
+
+            status, body = self._request(
+                "POST",
+                f"/bookings/{booking_id}/assign-driver",
+                {
+                    "actor_id": self.actor_id,
+                    "actor_type": "BUYER",
+                    "driver": self._driver_payload(),
+                },
+                server.server_port,
+            )
+
+            self.assertEqual(status, 403)
+            self.assertEqual(body["error"]["code"], "forbidden")
+            self.assertEqual(body["error"]["field"], "actor_type")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_api_returns_validation_error_for_unknown_actor_type(self) -> None:
+        server = self._start_test_server()
+        try:
+            _, created_body = self._request(
+                "POST",
+                "/bookings",
+                self._adult_booking_payload(),
+                server.server_port,
+            )
+            booking_id = created_body["booking"]["id"]
+
+            status, body = self._request(
+                "POST",
+                f"/bookings/{booking_id}/mark-met",
+                {
+                    "actor_id": self.actor_id,
+                    "actor_type": "ALIEN",
+                },
+                server.server_port,
+            )
+
+            self.assertEqual(status, 400)
+            self.assertEqual(body["error"]["code"], "validation_error")
+            self.assertEqual(body["error"]["field"], "actor_type")
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_api_plans_lists_and_delivers_notifications(self) -> None:
         server = self._start_test_server()
         try:
