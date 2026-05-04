@@ -97,3 +97,10 @@ Cancellation creates payment ledger entries tied to the cancellation event:
 refund plus a driver cancellation fee, and `MET` bookings create a driver
 cancellation fee without a refund. Cancellation after arrival is still rejected
 by the booking state machine.
+
+## Database migrations
+
+SQLite schema is managed by versioned migrations in `student_shuttle.migrations`.
+`SQLiteBookingRepository` applies unapplied migrations on initialization and
+records them in `schema_migrations`, so running repository setup repeatedly is
+idempotent.
