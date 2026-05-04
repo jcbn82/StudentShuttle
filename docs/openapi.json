@@ -747,19 +747,20 @@
       }
     },
     "schemas": {
+      "APIError": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "type": "string", "enum": ["validation_error", "not_found", "business_rule_error", "internal_error"] },
+          "message": { "type": "string" },
+          "field": { "type": "string" }
+        }
+      },
       "APIErrorResponse": {
         "type": "object",
         "required": ["error"],
         "properties": {
-          "error": {
-            "type": "object",
-            "required": ["code", "message"],
-            "properties": {
-              "code": { "type": "string", "enum": ["validation_error", "not_found", "business_rule_error", "internal_error"] },
-              "message": { "type": "string" },
-              "field": { "type": "string" }
-            }
-          }
+          "error": { "$ref": "#/components/schemas/APIError" }
         }
       },
       "Money": {
